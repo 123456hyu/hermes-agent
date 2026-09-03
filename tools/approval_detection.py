@@ -101,6 +101,13 @@ HARDLINE_PATTERNS = [
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
     (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # Sibling raw-disk destruction tools whose device operand is positional
+    # instead of dd's of= spelling: shred/wipefs/blkdiscard against a block
+    # device have no recovery path, the same device class as the dd rule
+    # above (#102371). Command-position anchored so quoted prose mentioning
+    # them stays data; `shred file.txt` (secure delete of a regular file)
+    # has no /dev/ block operand and stays clean.
+    (_CMDPOS + r'(?:shred|wipefs|blkdiscard)\b[^\n]*\s/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "raw block device wipe (shred/wipefs/blkdiscard)"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -273,6 +280,10 @@ DANGEROUS_PATTERNS = [
     # See #93392.
     (_CMDPOS + r'mkfs\b', "format filesystem"),
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
+    # Positional-operand twins of the hardline wipe rule (#102371): kept in
+    # the approval tier so the tools are gated even where only
+    # detect_dangerous_command is consulted; regular-file targets stay clean.
+    (_CMDPOS + r'(?:shred|wipefs|blkdiscard)\b[^\n]*\s/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "raw block device wipe (shred/wipefs/blkdiscard)"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
