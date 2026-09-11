@@ -32,7 +32,10 @@ export const WINDOWS_GPU_STACK_COOKIE_MARKER_FILENAME = 'windows-gpu-stack-cooki
 /** STATUS_STACK_BUFFER_OVERRUN as a signed Win32 exit code (WER / Chromium). */
 export const WINDOWS_STACK_COOKIE_EXIT = -1073740791
 
+const GPU_OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
+const DISABLE_GPU_SWITCH = '--disable-gpu'
+const DISABLE_GPU_COMPOSITING_SWITCH = '--disable-gpu-compositing'
 
 export type GpuStackCookieMarkerState = 'booting' | 'fallback' | 'ok'
 
@@ -84,6 +87,35 @@ export function isHermesDesktopGpuOverrideOff(env: NodeJS.ProcessEnv = process.e
     .toLowerCase()
 
   return GPU_OVERRIDE_OFF.has(override)
+}
+
+/**
+ * True when this process already launched with GPU off — Chromium argv
+ * (`--disable-gpu`) or HERMES_DESKTOP_DISABLE_GPU on. Mirrors
+ * `alreadyHasNoSandbox`: the crash-loop relaunch MUST pass these switches so
+ * the next process is protected even if the sticky marker write failed.
+ */
+export function alreadyHasDisableGpu(argv: readonly string[] = [], env: NodeJS.ProcessEnv = process.env): boolean {
+  if (Array.isArray(argv) && argv.some(arg => arg === DISABLE_GPU_SWITCH)) {
+    return true
+  }
+
+  const override = String(env.HERMES_DESKTOP_DISABLE_GPU || '')
+    .trim()
+    .toLowerCase()
+
+  return GPU_OVERRIDE_ON.has(override)
+}
+
+/** Relaunch argv with a single `--disable-gpu` + compositing switch. */
+export function buildDisableGpuRelaunchArgs(argv: readonly string[]): string[] {
+  const args = (Array.isArray(argv) ? argv : []).filter(
+    arg => arg !== DISABLE_GPU_SWITCH && arg !== DISABLE_GPU_COMPOSITING_SWITCH
+  )
+
+  args.push(DISABLE_GPU_SWITCH, DISABLE_GPU_COMPOSITING_SWITCH)
+
+  return args
 }
 
 export function parseGpuStackCookieMarker(raw: unknown): GpuStackCookieMarker | null {
@@ -231,18 +263,23 @@ export function shouldSurfaceErrorForRendererStackCookieCrashLoop(
  * - `fallback` is sticky within one app version. A version change re-probes
  *   GPU once so a fixed host returns to hardware acceleration.
  * - A marker without a version stays sticky (legacy / no-version contract).
+ * - `--disable-gpu` already in argv (crash-loop relaunch / Chromium switch)
+ *   is honored even if the sticky marker write failed, but is NOT made sticky
+ *   from argv alone.
  * - `HERMES_DESKTOP_DISABLE_GPU` explicitly off (`0`/`false`/`no`/`off`)
  *   fail-opens: do not disable GPU.
  */
 export function decideWindowsGpuStackCookieLaunch(
   options: {
     platform?: NodeJS.Platform | string
+    argv?: readonly string[]
     env?: NodeJS.ProcessEnv
     marker?: GpuStackCookieMarker | null
     appVersion?: string
   } = {}
 ): GpuStackCookieLaunchDecision {
   const appVersion = String(options.appVersion || '')
+  const argv = options.argv ?? process.argv
   const env = options.env ?? process.env
   const marker = options.marker ?? null
 
@@ -254,6 +291,15 @@ export function decideWindowsGpuStackCookieLaunch(
     const nextMarker: GpuStackCookieMarker = marker?.state === 'fallback' ? marker : { state: 'booting' }
 
     return { enable: false, reason: null, nextMarker }
+  }
+
+  // Honor an in-process `--disable-gpu` relaunch (or env override) even when
+  // the sticky marker write failed. Not made sticky from argv alone — the
+  // marker lifecycle stays unchanged, matching sandbox's already-enabled path.
+  if (alreadyHasDisableGpu(argv, env)) {
+    const nextMarker: GpuStackCookieMarker = marker?.state === 'fallback' ? marker : { state: 'booting' }
+
+    return { enable: true, reason: 'already-enabled', nextMarker }
   }
 
   if (marker?.state === 'fallback') {

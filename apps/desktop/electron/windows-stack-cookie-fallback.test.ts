@@ -7,6 +7,8 @@ import { test } from 'vitest'
 
 import { shouldRelaunchForRendererSandboxCrashLoop } from './windows-sandbox-fallback'
 import {
+  alreadyHasDisableGpu,
+  buildDisableGpuRelaunchArgs,
   decideWindowsGpuStackCookieLaunch,
   gpuStackCookieFallbackMarker,
   gpuStackCookieMarkerPath,
@@ -170,6 +172,58 @@ test('decideWindowsGpuStackCookieLaunch enables sticky fallback, re-probes on ve
   })
 
   assert.equal(legacy.enable, true)
+})
+
+test('alreadyHasDisableGpu honors argv and HERMES_DESKTOP_DISABLE_GPU', () => {
+  assert.equal(alreadyHasDisableGpu(['--foo', '--disable-gpu'], {}), true)
+  assert.equal(alreadyHasDisableGpu([], { HERMES_DESKTOP_DISABLE_GPU: '1' }), true)
+  assert.equal(alreadyHasDisableGpu([], { HERMES_DESKTOP_DISABLE_GPU: 'true' }), true)
+  assert.equal(alreadyHasDisableGpu(['--disable-gpu-compositing'], {}), false)
+  assert.equal(alreadyHasDisableGpu(['--no-sandbox'], {}), false)
+})
+
+test('buildDisableGpuRelaunchArgs appends a single GPU-off pair', () => {
+  assert.deepEqual(buildDisableGpuRelaunchArgs(['--foo', '--disable-gpu', 'hermes://x']), [
+    '--foo',
+    'hermes://x',
+    '--disable-gpu',
+    '--disable-gpu-compositing'
+  ])
+})
+
+test('decideWindowsGpuStackCookieLaunch honors argv --disable-gpu even without a marker', () => {
+  const viaArgs = decideWindowsGpuStackCookieLaunch({
+    platform: 'win32',
+    argv: ['--disable-gpu'],
+    env: {},
+    marker: null,
+    appVersion: '1.2.3'
+  })
+
+  assert.equal(viaArgs.enable, true)
+  assert.equal(viaArgs.reason, 'already-enabled')
+  assert.deepEqual(viaArgs.nextMarker, { state: 'booting' })
+
+  const viaArgsKeepsSticky = decideWindowsGpuStackCookieLaunch({
+    platform: 'win32',
+    argv: ['--disable-gpu'],
+    env: {},
+    marker: { state: 'fallback', reason: 'renderer-crash-loop', version: '1.2.3' },
+    appVersion: '1.2.3'
+  })
+
+  assert.equal(viaArgsKeepsSticky.enable, true)
+  assert.equal(viaArgsKeepsSticky.nextMarker.state, 'fallback')
+
+  const overrideOffBeatsArgv = decideWindowsGpuStackCookieLaunch({
+    platform: 'win32',
+    argv: ['--disable-gpu'],
+    env: { HERMES_DESKTOP_DISABLE_GPU: '0' },
+    marker: { state: 'fallback', reason: 'renderer-crash-loop', version: '1.2.3' },
+    appVersion: '1.2.3'
+  })
+
+  assert.equal(overrideOffBeatsArgv.enable, false)
 })
 
 test('CONTROL: sandbox relaunch stays false for 0xC0000409 (do not piggyback --no-sandbox)', () => {

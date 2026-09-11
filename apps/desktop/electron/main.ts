@@ -543,6 +543,8 @@ import {
   writeSandboxMarker
 } from './windows-sandbox-fallback'
 import {
+  alreadyHasDisableGpu,
+  buildDisableGpuRelaunchArgs,
   decideWindowsGpuStackCookieLaunch,
   gpuStackCookieFallbackMarker,
   isHermesDesktopGpuOverrideOff,
@@ -619,17 +621,20 @@ if (REMOTE_DISPLAY_REASON) {
 // `ready`. Skip applying switches when the remote-display block above already
 // did; still honor a sticky per-version marker so Start Menu launches recover.
 let windowsGpuStackCookieFallbackActive = false
+let windowsGpuStackCookieFallbackSticky = false
 let windowsGpuStackCookieRelaunchAttempted = false
 
 if (IS_WINDOWS) {
   const windowsGpuUserData = app.getPath('userData')
   const gpuStackCookieDecision = decideWindowsGpuStackCookieLaunch({
+    argv: process.argv,
     marker: readGpuStackCookieMarker(windowsGpuUserData),
     env: process.env,
     appVersion: app.getVersion()
   })
 
   windowsGpuStackCookieFallbackActive = gpuStackCookieDecision.enable
+  windowsGpuStackCookieFallbackSticky = gpuStackCookieDecision.nextMarker.state === 'fallback'
 
   try {
     writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker)
@@ -15375,7 +15380,7 @@ function createWindow() {
           writeGpuStackCookieMarker(
             app.getPath('userData'),
             markerAfterSuccessfulGpuStackCookieBoot({
-              fallbackActive: windowsGpuStackCookieFallbackActive,
+              fallbackActive: windowsGpuStackCookieFallbackSticky,
               appVersion: app.getVersion()
             })
           )
@@ -15438,7 +15443,10 @@ function createWindow() {
         const stackCookieCrashLoop = {
           reason: details?.reason,
           exitCode: details?.exitCode,
-          alreadyGpuDisabled: Boolean(REMOTE_DISPLAY_REASON) || windowsGpuStackCookieFallbackActive,
+          alreadyGpuDisabled:
+            Boolean(REMOTE_DISPLAY_REASON) ||
+            windowsGpuStackCookieFallbackActive ||
+            alreadyHasDisableGpu(process.argv, process.env),
           relaunchAttempted: windowsGpuStackCookieRelaunchAttempted,
           gpuOverrideOff: isHermesDesktopGpuOverrideOff(process.env)
         }
@@ -15446,6 +15454,7 @@ function createWindow() {
         if (shouldRelaunchForRendererStackCookieCrashLoop(stackCookieCrashLoop)) {
           windowsGpuStackCookieRelaunchAttempted = true
           windowsGpuStackCookieFallbackActive = true
+          windowsGpuStackCookieFallbackSticky = true
 
           try {
             writeGpuStackCookieMarker(
@@ -15461,7 +15470,7 @@ function createWindow() {
           )
 
           try {
-            app.relaunch({ args: process.argv.slice(1) })
+            app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
             void exitAfterBackendShutdown(0)
           } catch (err) {
             rememberLog(`[renderer] GPU-disable relaunch failed: ${err?.message || err}`)
