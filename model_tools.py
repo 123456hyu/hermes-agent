@@ -781,11 +781,19 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
         if block_message is not None:
             return function_args, (tool_error(block_message), "plugin_block", block_message)
 
+    from tools.environments.mxc_host import OFFLINE_REASON, backend_enabled, host_network_withheld_toolsets
+    # Browser Use executes model-supplied Python on the host, even with a remote browser.
+    # Network permission cannot authorize execution outside the filesystem sandbox.
+    if function_name == "browser_exec" and backend_enabled():
+        reason = ("browser_exec is unavailable while the MXC sandbox is on because it runs Python "
+                  "on the host, outside the sandbox. Use terminal or file tools for filesystem "
+                  "operations; they run inside the sandbox.")
+        return function_args, (tool_error(reason), "sandbox_host_execution", reason)
+
     # Sandbox network policy: with the sandbox on and its network off, the host-side network
     # toolsets are refused here, whatever the model's tool list says (a tool snapshot is frozen
     # for the life of a conversation). The tools stay visible so the refusal, and its reason,
     # is what the model and the user see.
-    from tools.environments.mxc_host import OFFLINE_REASON, host_network_withheld_toolsets
     withheld = host_network_withheld_toolsets()
     if withheld and get_toolset_for_tool(function_name) in withheld:
         return function_args, (tool_error(OFFLINE_REASON), "sandbox_offline", OFFLINE_REASON)

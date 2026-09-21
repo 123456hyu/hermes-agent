@@ -73,6 +73,13 @@ The policy is small on purpose, and the panel shows all of it:
   Hermes process, outside the container, so the switch has to cover them too or it would mean
   little). Local inference is unaffected because the model runs outside the sandbox.
 
+Browser Use's `browser_exec` tool is unavailable whenever the sandbox is on, even with network
+access allowed. Its Python code runs on the host rather than inside MXC, including when it
+controls a remote browser, so allowing it would bypass the folder policy. Calls return an
+explanation directing the agent to the sandboxed terminal and file tools for filesystem work.
+This restriction takes effect at invocation, including in conversations that already have the
+tool in their saved tool list.
+
 A few read-only grants are added automatically so the agent's tools work: the Hermes install and
 its Python, the bundled Node and Git, the sandbox shell, and the desktop's composer staging
 folders (the images and text you paste or attach), so a pasted screenshot can be analysed without

@@ -281,6 +281,35 @@ def test_network_tools_are_refused_at_invocation_while_the_sandbox_is_offline(mo
     assert blocked is None
 
 
+@pytest.mark.parametrize("network", [False, True])
+def test_browser_exec_follows_live_sandbox_policy_before_host_execution(monkeypatch, network):
+    """A saved browser tool must not regain host execution when the sandbox is switched on."""
+    import model_tools
+    from hermes_cli.config import get_config_path
+    from tools import browser_use_cli
+
+    calls = []
+
+    def host_browser(code, **kwargs):
+        calls.append(code)
+        return json.dumps({"output": "host handler reached"})
+
+    # Keep the real registry and config reader; never launch the host interpreter.
+    monkeypatch.setattr(browser_use_cli, "browser_exec", host_browser)
+    args = {"code": "print('probe')"}
+    config = get_config_path()
+    expected_calls = []
+    for backend in ("local", "mxc", "local", "mxc"):
+        config.write_text(json.dumps({"terminal": {"backend": backend, "mxc_network": network}}), encoding="utf-8")
+        result = json.loads(model_tools.handle_function_call("browser_exec", args, task_id="sandbox-toggle"))
+        if backend == "mxc":
+            assert "outside the sandbox" in result.get("error", ""), result
+        else:
+            assert result == {"output": "host handler reached"}
+            expected_calls.append(args["code"])
+        assert calls == expected_calls, "a blocked browser call must never reach the host handler"
+
+
 # ── host settings and status ─────────────────────────────────────────────────
 
 def test_resolve_settings_reads_config_first_then_env_bridge(monkeypatch):
