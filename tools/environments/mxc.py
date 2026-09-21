@@ -252,6 +252,8 @@ class MxcEnvironment(BaseEnvironment):
 
     # Not the host: the file tools' native fast paths must stay off (see module docstring).
     is_local = False
+    # Lets the terminal tool's cwd sanitizers recognize a live sandbox environment.
+    env_type = "mxc"
     # Shell file operations quote paths for the sandbox's POSIX shell, which takes native drive
     # paths with forward slashes (``C:/Users/x``), not the Git Bash ``/c/Users/x`` form.
     windows_path_form = "native"

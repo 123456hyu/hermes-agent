@@ -431,3 +431,44 @@ def test_environment_hints_describe_the_sandbox_for_the_mxc_backend(monkeypatch)
     hints = prompt_builder.build_environment_hints()
     assert "MXC" in hints and "Permission denied" in hints and "busybox" in hints
     assert "NOT on the machine where Hermes" not in hints, "MXC runs on the host filesystem"
+
+
+def test_the_terminal_tool_never_runs_a_sandboxed_command_in_a_refused_folder(tmp_path, monkeypatch):
+    """A cwd recorded while the sandbox was off (the user's home, the install tree) must not become the
+    working directory of a sandboxed command: the plan's default, the per-command resolution and the
+    live-env override write all fall back to the default workspace instead."""
+    import tools.terminal_tool as tt
+    from tools.terminal_tool_config import _is_refused_sandbox_cwd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(home) if p == "~" else p)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "data" / ".hermes"))
+    default = str(home / mxc_host.DEFAULT_WORKSPACE_DIRNAME)
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    assert _is_refused_sandbox_cwd("mxc", str(home))
+    assert not _is_refused_sandbox_cwd("mxc", str(project))
+    assert not _is_refused_sandbox_cwd("local", str(home))
+
+    # The plan's default cwd: TERMINAL_CWD pointing at home is re-homed for the sandbox only.
+    monkeypatch.setenv("TERMINAL_CWD", str(home))
+    assert tt._resolve_config_cwd("mxc", False)[0] == default
+    assert tt._resolve_config_cwd("local", False)[0] == str(home)
+
+    # The per-command resolution: a refused record yields the (sanitized) default; a project record
+    # and an explicit workdir pass through untouched.
+    monkeypatch.setattr(tt, "_session_cwd", {"sess": str(home)})
+    assert tt._resolve_command_cwd(workdir=None, default_cwd=default, session_key="sess", env_type="mxc") == default
+    assert tt._resolve_command_cwd(workdir=str(home), default_cwd=default, session_key="sess", env_type="mxc") == str(home)
+    monkeypatch.setattr(tt, "_session_cwd", {"sess": str(project)})
+    assert tt._resolve_command_cwd(workdir=None, default_cwd=default, session_key="sess", env_type="mxc") == str(project)
+
+    # The live-env override write: a sandbox env keeps its own cwd when the override is refused.
+    class FakeSandboxEnv:
+        env_type = "mxc"
+        cwd = default
+
+    assert tt._sanitize_cwd_for_live_env(FakeSandboxEnv(), str(home)) is None
+    assert tt._sanitize_cwd_for_live_env(FakeSandboxEnv(), str(project)) == str(project)

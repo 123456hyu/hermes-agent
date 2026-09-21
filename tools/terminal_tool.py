@@ -44,7 +44,7 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
+    _is_container_backend, _is_host_cwd, _is_refused_sandbox_cwd, _is_unusable_container_cwd, _parse_env_var,
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
@@ -289,6 +289,10 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     verbatim (ACP project-root switching must keep working).
     """
     env_type = getattr(env, "env_type", None)
+    if _is_refused_sandbox_cwd(env_type, new_cwd):
+        # The sandbox works on the host filesystem, so the override applies verbatim unless the
+        # policy refuses the folder as a workspace; then the env keeps its own.
+        return None
     if not env_type or not _is_container_backend(env_type):
         return new_cwd
     if not _is_unusable_container_cwd(new_cwd):
@@ -638,6 +642,12 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
                     "(host/relative path won't work in sandbox). Using %r instead.",
                     cwd, env_type, default_cwd)
         cwd = default_cwd
+    elif _is_refused_sandbox_cwd(env_type, cwd):
+        from tools.environments import mxc_host
+        rehomed = mxc_host.sandbox_workspace_for(cwd)
+        logger.info("Ignoring TERMINAL_CWD=%r for the %s backend (refused as a sandbox workspace). "
+                    "Using %r instead.", cwd, env_type, rehomed)
+        cwd = rehomed
     return cwd, host_cwd
 
 
@@ -827,6 +837,12 @@ def _resolve_command_cwd(
             "(host/relative path won't work in sandbox). Using %r instead.",
             recorded, env_type, default_cwd,
         )
+        return default_cwd
+    if recorded and _is_refused_sandbox_cwd(env_type, recorded):
+        # Recorded before the sandbox was switched on, typically; the command runs in the
+        # sanitized default and its observed cwd brings the record along.
+        logger.info("Ignoring recorded session cwd %r for the %s backend (refused as a sandbox "
+                    "workspace). Using %r instead.", recorded, env_type, default_cwd)
         return default_cwd
     return recorded or default_cwd
 
