@@ -136,6 +136,7 @@ import {
   resolveAuthMode,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryRequestPath,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
@@ -11646,7 +11647,10 @@ async function ensureRegistryBackend(
     })
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { passive, spawnPriority })
+      // The v1 route is resolved WITHOUT the request here, so the descriptor
+      // alone cannot vouch for profile scope. Tag the delegate; dispatch
+      // scopes the path from the live request instead (#119411).
+      return { ...(await ensureBackend(profile, { passive, spawnPriority })), registryLocalDelegate: true }
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -17190,7 +17194,12 @@ async function dispatchRegistryApiRequest(
         ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
       )
 
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
+  const requestPath = resolveRegistryRequestPath(
+    request.path,
+    requestProfile,
+    connection,
+    profileRouteOptions(requestProfile, request)
+  )
 
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,

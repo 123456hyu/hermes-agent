@@ -973,6 +973,9 @@ function pathWithProfileScope(path, profile) {
 
 export interface RegistryBackendRequestScope {
   remoteProfile?: null | string
+  /** Registry 'local' delegate: the shared host backend resolved without the
+   * request, so the descriptor alone cannot vouch for profile scope. */
+  registryLocalDelegate?: boolean
   sharedRemote?: boolean
 }
 
@@ -986,6 +989,28 @@ function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRe
   return backend.sharedRemote
     ? pathWithProfileScope(path, profile)
     : translateSelfProfileQuery(path, profile, backend.remoteProfile)
+}
+
+/**
+ * Scope a REST path for a resolved registry backend, covering the 'local'
+ * delegate: that branch resolves the shared host backend WITHOUT the request
+ * (`localPrimaryRequestScope` → null), so neither `sharedRemote` nor a
+ * request-less descriptor tag can vouch for scope — and the primary's tag is
+ * dropped outright. Scope from the live request through the same table the v1
+ * route uses instead, so a bare path never falls through to the backend's
+ * launch home (#119411). Non-delegates keep the registry route unchanged.
+ */
+function resolveRegistryRequestPath(
+  path,
+  profile,
+  backend: RegistryBackendRequestScope,
+  routeOpts: ProfileRouteOptions = {}
+) {
+  if (backend && backend.registryLocalDelegate) {
+    return pathWithGlobalRemoteProfile(path, profile, routeOpts)
+  }
+
+  return pathForRegistryBackendRequest(path, profile, backend)
 }
 
 /**
@@ -1138,6 +1163,7 @@ export {
   resolveAuthMode,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryRequestPath,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
