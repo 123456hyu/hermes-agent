@@ -462,6 +462,7 @@ class _ManagedToolResult:
     middleware_trace: list[dict[str, Any]]
     blocked: bool
     dispatched: bool
+    invalid_arguments: str | None = None
 
 
 class _ToolTimeoutResult(str):
@@ -692,6 +693,18 @@ def _dispatch_authorized_once(
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
+
+    if block_message is None:
+        from agent.turn_tool_validation import required_argument_error
+        invalid_arguments = required_argument_error(agent, ref.name, ref.args)
+        if invalid_arguments is not None:
+            _advance_start_order()
+            state.blocked = True
+            state.invalid_arguments = invalid_arguments
+            result = json.dumps({"error": invalid_arguments}, ensure_ascii=False)
+            ref.emit_post(agent, result, status="blocked", error_type="invalid_tool_arguments",
+                          error_message=invalid_arguments)
+            return result
 
     guardrail_decision = None
     if block_message is None:
@@ -1031,6 +1044,7 @@ def _commit_tool_result(
     blocked: bool,
     effect_disposition,
     observed: bool = False,
+    invalid_arguments: str | None = None,
     error_preview: Callable[[Any], Any] = lambda result: result,
     success_log_chars: Optional[int] = None,
     verbose_text: Callable[[Any], Any] = lambda result: result,
@@ -1045,7 +1059,9 @@ def _commit_tool_result(
     """
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
     if observed:
-        if not blocked:
+        if invalid_arguments is not None:
+            function_result = _observe_invalid_arguments(agent, ref, function_result)
+        elif not blocked:
             function_result = agent._append_guardrail_observation(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
             )
@@ -1178,6 +1194,7 @@ class _ToolOutcome:
     duration: float
     is_error: bool
     blocked: bool
+    invalid_arguments: str | None = None
 
 
 def _start_order_gate_timeout(batch_timeout: float | None) -> float:
@@ -1270,6 +1287,7 @@ class _ConcurrentBatch:
         # propagate_context_to_thread() at the submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         blocked = dispatched = False
+        invalid_arguments = None
         try:
             managed = _run_agent_tool_execution_middleware(
                 agent,
@@ -1289,6 +1307,7 @@ class _ConcurrentBatch:
             )
             result, ref.args, ref.trace = managed.result, managed.args, managed.middleware_trace
             blocked, dispatched = managed.blocked, managed.dispatched
+            invalid_arguments = managed.invalid_arguments
         except _BatchAbandoned:
             logger.info("tool %s abandoned at start-order gate; skipping dispatch", ref.name)
             return None
@@ -1313,7 +1332,7 @@ class _ConcurrentBatch:
             logger.info(
                 "tool %s completed (%.2fs, %d chars)", ref.name, duration, result_chars
             )
-        return _ToolOutcome(ref, result, duration, is_error, blocked)
+        return _ToolOutcome(ref, result, duration, is_error, blocked, invalid_arguments)
 
     def run_worker(self, index: int, start_order: int) -> None:
         """Worker function executed in a thread."""
@@ -1479,10 +1498,12 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             effect_disposition = "none" if blocked else None
             if pc.parse_error is not None:
                 ref.emit_invalid_arguments(agent, r.result)
+                function_result = _observe_invalid_arguments(agent, ref, r.result)
         committed = _commit_tool_result(
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
             effect_disposition=effect_disposition, observed=r is not None,
+            invalid_arguments=r.invalid_arguments if r is not None else None,
             error_preview=lambda res: _multimodal_text_summary(res)[:200],
         )
         if committed is None:
@@ -1666,10 +1687,19 @@ def _skip_remaining_sequential(agent, messages: list, remaining, effective_task_
     return _append_skipped_tool_results(agent, messages, remaining, effective_task_id, **skip_kwargs)
 
 
+def _observe_invalid_arguments(agent, ref: _ToolCallRef, parse_error: str) -> str:
+    """Count a pre-dispatch argument rejection without ordinary tool-failure policy."""
+    from agent.tool_guardrails import append_toolguard_guidance
+    decision = agent._tool_guardrails.record_invalid_arguments(ref.name)
+    if decision.should_halt:
+        agent._set_tool_guardrail_halt(decision)
+    return append_toolguard_guidance(parse_error, decision)
+
+
 def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, parse_error: str) -> bool:
     """Emit + append the parse-error result for a call whose arguments were not a JSON object."""
     ref.emit_invalid_arguments(agent, parse_error)
-    messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id))
+    messages.append(make_tool_result_message(ref.name, _observe_invalid_arguments(agent, ref, parse_error), ref.call_id))
     return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
 
 
@@ -1742,7 +1772,8 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
-        effect_disposition="unknown" if _execution_timed_out else None, observed=True,
+        effect_disposition="unknown" if _execution_timed_out else ("none" if managed.blocked else None), observed=True,
+        invalid_arguments=managed.invalid_arguments,
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,

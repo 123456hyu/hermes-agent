@@ -2057,6 +2057,7 @@ tool_loop_guardrails:
   loop_caps:
     max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
+    max_invalid_arguments: 3   # consecutive invalid/incomplete argument rejections (0 = never halt)
 ```
 
 `hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md).
@@ -2074,6 +2075,10 @@ Separate from the failure-based thresholds above, `loop_caps` sets hard ceilings
 A single `delegate_task` batch counts each task toward `max_subagents` (a batch of 3 spends 3), so the cap tracks real subagents spawned rather than `delegate_task` invocations.
 
 This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
+
+`max_invalid_arguments` bounds pre-dispatch argument rejections, including non-object arguments and direct tool calls missing top-level fields marked `required` in the agent's advertised schema. The error names the missing fields so the model can correct its next call. Validation runs after plugin/middleware argument rewrites and before the handler or edit approval. Present empty strings, `false`, zero and `null` are not treated as missing; semantic checks and deferred-tool validation remain with their existing handlers. The patch tool retains both supported replay formats regardless of which schema was advertised: replace calls (the default) require `path`, `old_string` and `new_string`; V4A calls with `mode: patch` require `patch`.
+
+The counter applies on every surface without enabling general `hard_stop_enabled`: three consecutive rejected calls end the turn with an explanation. It counts across tools, resets each turn, and any call that reaches a tool resets the streak even if the tool reports failure. Thus real patch/test iteration retains its existing policy. Set `max_invalid_arguments: 0` to disable this halt. In-flight batch results are still recorded with one result per call; no earlier messages or cached schemas are rewritten.
 
 ### Runtime anti-stall guards
 

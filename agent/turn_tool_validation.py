@@ -67,6 +67,31 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
     }, "truncated", True)
 
 
+def required_argument_error(agent: Any, tool_name: str, args: dict) -> str | None:
+    """Validate presence against the schema this agent advertised, after plugin rewrites.
+
+    This is not type/semantic validation: empty strings, false, zero, nullable values
+    and tool-specific alternatives remain the handler's responsibility.
+    """
+    schema = next((tool.get("function", {}) for tool in agent.tools
+                   if tool.get("function", {}).get("name") == tool_name), None)
+    if schema is None:
+        return None  # Deferred tools retain their own schema-validation contract.
+    required = (schema.get("parameters") or {}).get("required") or []
+    if tool_name == "patch":
+        # Its provider-specific projection is narrower than its replay contract:
+        # both V4A and default replace calls remain accepted on every provider.
+        required = ["patch"] if args.get("mode", "replace") == "patch" else ["path", "old_string", "new_string"]
+    missing = [key for key in required if key not in args]
+    if not missing:
+        return None
+    return (
+        f"Tool {tool_name} is missing required argument(s): {', '.join(missing)}. "
+        f"No tool ran. Retry with every required field: {', '.join(required)}. "
+        "Do not repeat the incomplete call."
+    )
+
+
 def validate_tool_calls(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, effective_task_id: Any,

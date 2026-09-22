@@ -54,6 +54,7 @@ def _make_agent(monkeypatch):
         _current_api_request_id = ""
 
         def __init__(self):
+            self.tools = []
             self._tool_worker_threads: set = set()
             self._tool_worker_threads_lock = threading.Lock()
             self._active_children_lock = threading.Lock()

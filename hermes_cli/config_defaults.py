@@ -547,6 +547,8 @@ DEFAULT_CONFIG = {
         "loop_caps": {
             "max_web_searches": 50,   # web_search calls per turn
             "max_subagents": 50,      # subagents spawned per turn
+            # consecutive pre-dispatch argument rejections; an executed call restarts the count
+            "max_invalid_arguments": 3,
         },
     },
 

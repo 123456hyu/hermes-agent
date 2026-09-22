@@ -163,6 +163,7 @@ terminal:
 - `--cap-drop ALL`，仅添加回 `DAC_OVERRIDE`、`CHOWN`、`FOWNER`
 - `--security-opt no-new-privileges`
 - `--pids-limit 256`
+<!-- no-tmp: ok — These are fixed container tmpfs mount points, not scratch-directory recommendations. -->
 - `/tmp`（512MB）、`/var/tmp`（256MB）、`/run`（64MB）的大小限制 tmpfs
 
 **凭据转发：** `docker_forward_env` 中列出的环境变量首先从您的 shell 环境解析，然后回退到 `~/.hermes/.env`。技能也可以声明 `required_environment_variables`，这些变量会自动合并。
@@ -431,7 +432,7 @@ hermes config set terminal.persistent_shell false
 ```
 
 **跨命令保持的内容：**
-- 工作目录（`cd /tmp` 对下一条命令生效）
+- 工作目录（`cd ~/my-project` 对下一条命令生效）
 - 导出的环境变量（`export FOO=bar`）
 - Shell 变量（`MY_VAR=hello`）
 
@@ -720,6 +721,18 @@ agent:
 当迭代预算完全耗尽时，CLI 向用户显示通知：`⚠ Iteration budget reached (500/500) — response may be incomplete`。
 
 `agent.api_max_retries` 控制 Hermes 在回退 provider 切换启动**之前**对瞬时错误（速率限制、连接断开、5xx）重试 provider API 调用的次数。默认为 `3` —— 总共四次尝试。如果您配置了[回退 providers](./features/fallback-providers.md) 并希望更快地故障转移，请将其降至 `0`，这样主 provider 上的第一个瞬时错误会立即切换到回退，而不是对不稳定的端点进行重试。
+
+### 不完整工具参数的恢复上限
+
+```yaml
+tool_loop_guardrails:
+  loop_caps:
+    max_invalid_arguments: 3  # 连续拒绝的上限；0 表示关闭此停止条件
+```
+
+直接工具调用的参数不是 JSON 对象，或缺少必填字段时，Hermes 会在执行前拒绝调用并指出需要修正的字段。连续三次拒绝会结束当前轮次；即使 CLI 的普通工具失败策略仅发出警告，此上限也生效。任意工具实际执行后都会重置连续计数，包括工具执行后返回失败的情况，因此正常的编辑与测试循环不受影响。
+
+必填字段检查发生在插件改写参数之后，只检查字段是否存在，保留空字符串、`false`、零和 `null`。`patch` 在所有 provider 上仍接受两种格式：默认 replace 模式要求 `path`、`old_string` 和 `new_string`；`mode: patch` 的 V4A 格式要求 `patch`。延迟加载工具的参数校验保持不变。
 
 ### API 超时
 

@@ -35,6 +35,7 @@ def test_incomplete_requests_are_bounded_without_dispatch(mode, tmp_path):
     assert dispatch.call_count == 0
     assert agent.client.chat.completions.create.call_count == 3
     assert result["turn_exit_reason"] == "guardrail_halt"
+    assert "rejected" in result["final_response"] and "did not execute" in result["final_response"]
     assert target.read_text(encoding="utf-8") == "keep me\n"
     results = [m for m in result["messages"] if m.get("role") == "tool"]
     assert len(results) == 3
@@ -66,3 +67,27 @@ def test_plugin_correction_and_empty_replacements_remain_executable(mode, tmp_pa
     assert all(c.args[1]["new_string"] == "" and c.args[1]["replace_all"] is False for c in dispatch.call_args_list)
     assert agent.client.chat.completions.create.call_count == 7
     assert result["turn_exit_reason"].startswith("text_response")
+
+
+@pytest.mark.parametrize("mode", ["sequential", "concurrent"])
+@pytest.mark.parametrize("family", ["base", "openai"])
+@pytest.mark.parametrize("shape", ["replace", "v4a"])
+def test_patch_replay_contract_survives_either_advertised_schema(mode, family, shape, tmp_path):
+    from agent.auxiliary_client import scoped_runtime_main
+    from tools.file_tools import _patch_schema_overrides
+
+    target = tmp_path / "replay.txt"
+    target.write_text("before\n", encoding="utf-8")
+    agent = _agent(mode)
+    with scoped_runtime_main({"provider": "openai" if family == "openai" else "custom", "model": "gpt-5" if family == "openai" else "test-model"}):
+        schema = {**PATCH_SCHEMA, **_patch_schema_overrides()}
+    agent.tools = [{"type": "function", "function": schema}]
+    if shape == "v4a":
+        args = {"mode": "patch", "patch": f"*** Begin Patch\n*** Update File: {target}\n@@\n-before\n+after\n*** End Patch"}
+    else:
+        args = {"path": str(target), "old_string": "before", "new_string": "after"}
+    agent.client.chat.completions.create.side_effect = [_response(args, 0), _mock_response(content="done")]
+    result = agent.run_conversation("Apply the requested edit.")
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "guardrail" not in result
