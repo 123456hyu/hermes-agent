@@ -116,7 +116,7 @@ def _print_fts_optimize_available_notice() -> None:
     if size_gb < 0.5:
         return
     db = None
-    needs_upgrade = False
+    legacy_inline = trigram_v1 = False
     try:
         db = SessionDB(db_path=db_path, read_only=True)
         # read_only opens skip schema init; probe the stored layout directly.
@@ -124,7 +124,9 @@ def _print_fts_optimize_available_notice() -> None:
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
-        needs_upgrade = bool(row) and getattr(db, "_db_needs_fts_storage_upgrade")(db._conn)
+        if row:
+            legacy_inline = db._db_has_legacy_inline_fts(db._conn)
+            trigram_v1 = db._db_has_trigram_tool_calls_projection(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -147,7 +149,7 @@ def _print_fts_optimize_available_notice() -> None:
         if db is not None:
             with suppress(Exception):
                 db.close()
-    if not needs_upgrade and not interrupted:
+    if not legacy_inline and not trigram_v1 and not interrupted:
         return  # current layout already present (fresh/optimized)
 
     if interrupted:
@@ -159,6 +161,25 @@ def _print_fts_optimize_available_notice() -> None:
             "and finish reclaiming disk:"
         )
         print("    hermes sessions optimize-storage")
+        return
+
+    if not legacy_inline:
+        # Layout 1 -> 3: only the trigram (substring/CJK) index is behind. The ~60% figure below is
+        # the legacy-inline number and would be a lie here — this rebuild drops the tool-call JSON
+        # the trigram index still tokenizes, whose share of the file is not knowable cheaply.
+        print()
+        print("◆ Session search index layout changed since it was last built")
+        print(
+            f"  The substring/CJK (trigram) index in state.db ({size_gb:.1f} GB) still indexes "
+            f"tool-call JSON; the current layout leaves it out. Rebuilding drops that payload "
+            f"from the file. This is a newer layout than the one your last "
+            f"`optimize-storage` built, so one more pass is needed."
+        )
+        print("  Run when convenient:  hermes sessions optimize-storage")
+        print(
+            "  It runs in the foreground with a progress bar, is safe to "
+            "interrupt/re-run, and never changes your conversations."
+        )
         return
 
     est_reclaim = size_gb * 0.6
