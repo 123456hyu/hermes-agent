@@ -44,6 +44,13 @@ export interface CopyTextFeedbackOptions {
   successTitle?: string
 }
 
+/**
+ * Write to the clipboard and tell the user how it went. Failure always toasts
+ * (the clipboard really does refuse: focus loss, insecure origins, headless
+ * shells) so a silent copy never looks identical to a refused one. The success
+ * toast is opt-in: callers with an inline affordance (CopyButton's check icon,
+ * a "Copied" label flash) already confirm the write on the element itself.
+ */
 export async function copyTextWithFeedback(text: string, options: CopyTextFeedbackOptions = {}): Promise<boolean> {
   if (!text) {
     return false
@@ -53,7 +60,7 @@ export async function copyTextWithFeedback(text: string, options: CopyTextFeedba
     errorMessage = translateNow('common.copyFailed'),
     haptic = true,
     notifyFailure = true,
-    notifySuccess = true,
+    notifySuccess = false,
     successMessage = translateNow('common.copied'),
     successTitle
   } = options
@@ -90,7 +97,6 @@ export interface CopyButtonProps {
   haptic?: boolean
   iconClassName?: string
   label?: string
-  notifySuccess?: boolean
   onCopied?: () => void
   onCopyError?: (error: unknown) => void
   preventDefault?: boolean
@@ -112,7 +118,6 @@ export function CopyButton({
   haptic = true,
   iconClassName,
   label,
-  notifySuccess = true,
   onCopied,
   onCopyError,
   preventDefault = false,
@@ -153,13 +158,7 @@ export function CopyButton({
           return
         }
 
-        await copyTextWithFeedback(value, {
-          errorMessage: resolvedErrorMessage,
-          haptic,
-          notifySuccess,
-          successMessage: t.common.copied,
-          successTitle: resolvedLabel
-        })
+        await copyTextWithFeedback(value, { errorMessage: resolvedErrorMessage, haptic })
 
         if (resetRef.current !== null) {
           window.clearTimeout(resetRef.current)
@@ -185,18 +184,7 @@ export function CopyButton({
         }, COPIED_RESET_MS)
       }
     },
-    [
-      haptic,
-      notifySuccess,
-      onCopied,
-      onCopyError,
-      preventDefault,
-      resolvedErrorMessage,
-      resolvedLabel,
-      stopPropagation,
-      t.common.copied,
-      text
-    ]
+    [haptic, onCopied, onCopyError, preventDefault, resolvedErrorMessage, stopPropagation, text]
   )
 
   const Icon = status === 'copied' ? Check : status === 'error' ? X : Copy

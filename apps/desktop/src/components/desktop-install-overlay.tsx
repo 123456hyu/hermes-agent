@@ -512,8 +512,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               <Button
                 onClick={() => {
                   void copyTextWithFeedback(ups.installCommand, {
-                    errorMessage: copy.copyCommand,
-                    successMessage: t.common.copied,
+                    notifySuccess: true,
                     successTitle: copy.copyCommand
                   }).catch(() => undefined)
                 }}
@@ -721,11 +720,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                     const fullText = state.error ? `Error: ${state.error}\n\n${text}` : text
 
                     try {
-                      await copyTextWithFeedback(fullText, {
-                        errorMessage: copy.copyOutput,
-                        successMessage: copy.copiedOutput,
-                        successTitle: copy.copyOutput
-                      })
+                      await copyTextWithFeedback(fullText)
                       setCopied(true)
                       window.setTimeout(() => setCopied(false), 1500)
                     } catch {

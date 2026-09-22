@@ -332,7 +332,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
       return
     }
 
-    void copyTextWithFeedback(command, { successMessage: u.copied, successTitle: u.copy })
+    void copyTextWithFeedback(command)
       .then(copied => {
         if (copied) {
           setCopied(true)

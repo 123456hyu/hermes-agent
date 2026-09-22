@@ -36,7 +36,7 @@ describe('CopyButton i18n', () => {
     expect(screen.getByRole('button', { name: '已复制' }).textContent).toContain('已复制')
   })
 
-  it('posts a success notification after a clipboard write resolves', async () => {
+  it('posts a success notification only when opted in', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -45,6 +45,7 @@ describe('CopyButton i18n', () => {
 
     await copyTextWithFeedback('hello', {
       haptic: false,
+      notifySuccess: true,
       successMessage: 'Copied session ID',
       successTitle: 'Copy ID'
     })
@@ -55,5 +56,16 @@ describe('CopyButton i18n', () => {
       message: 'Copied session ID',
       title: 'Copy ID'
     })
+  })
+
+  it('toasts the failure and rethrows when the clipboard refuses the write', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('Write permission denied')) }
+    })
+
+    await expect(copyTextWithFeedback('hello', { haptic: false })).rejects.toThrow('Write permission denied')
+    expect($notifications.get()).toHaveLength(1)
+    expect($notifications.get()[0]).toMatchObject({ kind: 'error' })
   })
 })
