@@ -707,6 +707,21 @@ def test_startup_warn_prints_when_marker_present(capsys):
     assert "hermes gateway restart" in err
 
 
+def test_startup_warn_silent_while_a_live_update_holds_the_lock(capsys):
+    """The marker is armed for the whole tail of ``hermes update``; the processes that start
+    inside that window (the Desktop ``--build-only`` child, the ``gateway run`` the restart
+    phase brings up) must not warn about the update that spawned them."""
+    from hermes_cli.update_lock import UpdateLock
+
+    update_cmd._write_fleet_restart_pending_marker()
+    with UpdateLock() as lock:
+        assert lock.acquired
+        update_cmd._warn_pending_fleet_restart_on_startup()
+        assert capsys.readouterr().err == ""
+    update_cmd._warn_pending_fleet_restart_on_startup()
+    assert "did not restart running gateways" in capsys.readouterr().err
+
+
 def test_startup_warn_silent_when_nothing_pending(capsys):
     update_cmd._warn_pending_fleet_restart_on_startup()
     captured = capsys.readouterr()

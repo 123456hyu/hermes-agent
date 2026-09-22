@@ -482,10 +482,21 @@ def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
 
 
 def _warn_pending_fleet_restart_on_startup() -> None:
-    """Cheap CLI-startup hint. Never restarts; never raises."""
+    """Cheap CLI-startup hint. Never restarts; never raises.
+
+    Silent while a live ``hermes update`` holds the update lock: the obligation it armed after
+    the pull is its own to discharge, and the processes that start during its tail — the
+    ``hermes_cli.main desktop --build-only`` child and the ``gateway run`` its restart phase
+    just brought up — otherwise warn about the very update that spawned them, on every update
+    that rebuilds the Desktop app or restarts a service.
+    """
+    from hermes_cli.update_lock import read_live_update
     from hermes_cli.update_receipt import read_latest_receipt
     from hermes_cli.update_serve_obligations import retain_receipt_manual_serves, warn_pending_manual_serves
 
+    with suppress(Exception):
+        if read_live_update() is not None:
+            return
     receipt = read_latest_receipt() or {}
     pending_manual = None
     with suppress(Exception):
