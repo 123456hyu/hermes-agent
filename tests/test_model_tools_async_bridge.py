@@ -371,10 +371,10 @@ class TestVisionDispatchLoopSafety:
                 new_callable=AsyncMock,
                 side_effect=lambda url, dest, **kw: _write_fake_image(dest),
             ),
+            # The unified resolver checks DNS before the mocked download leaf.
             patch(
-                "tools.vision_tools._validate_image_url_async",
-                new_callable=AsyncMock,
-                return_value=True,
+                "tools.url_safety.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
             ),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",
@@ -416,10 +416,10 @@ class TestVisionDispatchLoopSafety:
                 new_callable=AsyncMock,
                 side_effect=lambda url, dest, **kw: _write_fake_image(dest),
             ),
+            # The unified resolver checks DNS before the mocked download leaf.
             patch(
-                "tools.vision_tools._validate_image_url_async",
-                new_callable=AsyncMock,
-                return_value=True,
+                "tools.url_safety.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
             ),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",

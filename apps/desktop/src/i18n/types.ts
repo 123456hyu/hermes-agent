@@ -817,6 +817,9 @@ export interface Translations {
       statusAvailable: string
       statusDegraded: string
       statusUnavailable: string
+      statusUnknown: string
+      modelOutputBlocked: string
+      modelOutputUnconfirmed: string
       toggleLabel: string
       toggleDescription: string
       shellNote: string
@@ -2584,6 +2587,8 @@ export interface Translations {
       heading: string
       titleOn: string
       titleOff: string
+      unknown: string
+      unavailable: string
       on: string
       off: string
       descriptionOn: (folder: string) => string
@@ -3757,6 +3762,7 @@ export interface Translations {
       /** Over-budget / rejected memory write title — not "Saved to memory". */
       resultUnavailable: string
       sandboxBlocked: string
+      sandboxRecursiveScope: (path: string) => string
       sandboxBlockedDetail: (path: string) => string
       sandboxAllowRead: string
       sandboxAllowReadWrite: string

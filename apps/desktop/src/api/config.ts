@@ -1,3 +1,5 @@
+import { currentSandboxOwner, getSandboxStatus, type SandboxOwner } from '@/api/sandbox'
+import { mutateSandbox } from '@/store/sandbox'
 import type {
   ConfigSchemaResponse,
   CustomEndpointsResponse,
@@ -14,13 +16,7 @@ import type {
   StatusResponse
 } from '@/types/hermes'
 
-import {
-  capabilityScoped,
-  hermesApi,
-  type ProfileScope,
-  profileScoped,
-  STARTUP_REQUEST_TIMEOUT_MS
-} from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
 export function getStatus(): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({
@@ -99,29 +95,58 @@ export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSc
   })
 }
 
+async function saveWithPolicyRefresh(
+  config: HermesConfigRecord,
+  owner: SandboxOwner,
+  save: () => Promise<{ ok: boolean }>
+): Promise<{ ok: boolean }> {
+  if (!Object.hasOwn(config, 'terminal')) {
+    return save()
+  }
+
+  let result!: { ok: boolean }
+  await mutateSandbox(owner, async () => {
+    result = await save()
+
+    return getSandboxStatus(owner)
+  })
+
+  return result
+}
+
 export function saveHermesConfig(
   config: HermesConfigRecord,
   profile?: null | string,
   { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
 ): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
-    path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
-    method: 'PUT',
-    body: { config }
-  })
+  const owner = currentSandboxOwner(profile)
+
+  return saveWithPolicyRefresh(config, owner, () =>
+    hermesApi<{ ok: boolean }>({
+      ...profileScoped(profile),
+      connectionId: owner.connectionId ?? undefined,
+      path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
+      method: 'PUT',
+      body: { config }
+    })
+  )
 }
 
 /** Capability-scoped counterpart of saveHermesConfig — writes the config of
  *  the profile/connection the Capabilities scope selector points at (possibly
  *  on another registered gateway), mirroring getHermesConfigRecord. */
 export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
-    ...capabilityScoped(profile),
-    path: '/api/config',
-    method: 'PUT',
-    body: { config }
-  })
+  const scope = capabilityScoped(profile)
+  const owner = { connectionId: scope.connectionId ?? null, profile: scope.profile ?? null }
+
+  return saveWithPolicyRefresh(config, owner, () =>
+    window.hermesDesktop.api<{ ok: boolean }>({
+      ...scope,
+      path: '/api/config',
+      method: 'PUT',
+      body: { config }
+    })
+  )
 }
 
 export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
