@@ -3225,10 +3225,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """
         if not isinstance(message, str):
             return None
-        # Under session authority the canonical FIFO is the single writer for every session,
-        # so a peer turn is admitted there (``run_api_turn``) rather than handed to a lease holder.
+        # Under session authority the Bot Chat is a LOCAL session whose only writer is the
+        # authority FIFO (a Desktop showing it is a viewer, not a lease holder): the turn enters
+        # through the same door as ``bot_relay.deliver`` and the receipt is its admission's.
         if getattr(self.gateway_runner, "session_authority", None) is not None:
-            return None
+            from gateway.platforms.api_server_bot_chat import admit_peer_turn
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self.gateway_runner)
+            if authority is None:
+                return None
+            return await admit_peer_turn(authority, session_id, message, author)
         db = await self._ensure_session_db_async()
         if db is None:
             return None
@@ -3279,19 +3285,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                code=record.get("reason") or record["status"], headers=headers)
 
     async def _await_live_bot_chat_receipt(self, home: Path, record: Dict[str, Any], *, keepalive=None) -> Dict[str, Any]:
-        """Wait on the owner's mailbox record through the shared ``await_delivery_async`` primitive until it
-        settles or the local DM budget runs out; ``keepalive`` (async) is called every SSE keepalive interval
-        so a streaming caller's proxy keeps the socket."""
-        from tools.bot_live_delivery import await_delivery_async
+        """Wait on the live Bot Chat's receipt (the authority admission's waiter, or the legacy owner
+        mailbox through ``await_delivery_async``) until it settles or the local DM budget runs out;
+        ``keepalive`` (async) is called every SSE keepalive interval so a streaming caller's proxy
+        keeps the socket."""
+        from gateway.platforms.api_server_bot_chat import await_live_delivery
         from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
-        delivery_id = record["delivery_id"]
         deadline = time.monotonic() + _LIVE_WAIT_SECONDS
         while record["status"] in ("queued", "claimed"):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             budget = remaining if keepalive is None else min(remaining, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
-            record = await await_delivery_async(home, delivery_id, budget) or record
+            record = await await_live_delivery(self, home, record, budget)
             if keepalive is not None and record["status"] in ("queued", "claimed"):
                 await keepalive()
         return record

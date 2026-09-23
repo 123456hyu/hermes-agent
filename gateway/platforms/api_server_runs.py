@@ -726,7 +726,13 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author)
-    if getattr(self.gateway_runner, 'session_authority', None) is not None:
+    # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
+    # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
+    # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
+    # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
+    # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
+    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
         from gateway.session_api_turn import admit_api_turn
         from hermes_state_runtime import RuntimeStoreError
         try:
@@ -749,10 +755,6 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
             return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
     self._activate_admitted_request()
-    # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
-    # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-    # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
-    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
@@ -888,7 +890,7 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     as ``cancelled`` while the chat finishes on its own; the stop handler already reports that a
     run without an in-process agent is not interruptible here.
     """
-    from tools.bot_live_delivery import await_delivery_async
+    from gateway.platforms.api_server_bot_chat import await_live_delivery
 
     run_id = run.run_id
     delivery_id = record["delivery_id"]
@@ -904,8 +906,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
 
     try:
         self._set_run_status(run_id, "running", delivery_id=delivery_id)
-        record = await await_delivery_async(
-            home, delivery_id, None, should_stop=lambda: run_id in self._stopping_run_ids) or record
+        record = await await_live_delivery(
+            self, home, record, None, should_stop=lambda: run_id in self._stopping_run_ids)
         if record["status"] in ("queued", "claimed"):
             _finish("cancelled", completed=False, partial=False, interrupted=True)
             return
@@ -1295,7 +1297,10 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
-    if getattr(self.gateway_runner, 'session_authority', None) is not None:
+    # A run whose turn a live Bot Chat owns (``_execute_run_via_live_owner``) is not an API
+    # admission: its stop is the legacy in-process task cancel below, never ``stop_run``.
+    if (getattr(self.gateway_runner, 'session_authority', None) is not None
+            and not (task is not None and status.get("delivery_id"))):
         from gateway.platforms.api_server_authority_runs import stop_run
         from hermes_state_runtime import RuntimeStoreError
         try:
