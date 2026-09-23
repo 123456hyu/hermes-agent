@@ -136,7 +136,6 @@ import {
   resolveAuthMode,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
-  resolveRegistryRequestPath,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
@@ -8507,7 +8506,7 @@ function gatewayFileRequestPath(
   requestPath: string
 ) {
   return connectionId
-    ? pathForRegistryBackendRequest(requestPath, profile, connection)
+    ? pathForRegistryBackendRequest(requestPath, profile, connection, profileRouteOptions(profile))
     : pathWithGlobalRemoteProfile(requestPath, profile, profileRouteOptions(profile))
 }
 
@@ -11536,7 +11535,11 @@ async function ensureRegistryBackend(
   connectionId,
   profile,
   managedUpdateCorrelation = '',
-  opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: {
+    passive?: boolean
+    request?: { method?: string; path?: string }
+    spawnPriority?: LocalBackendSpawnPriority
+  } = {}
 ) {
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   const passive = Boolean(opts.passive)
@@ -11647,10 +11650,15 @@ async function ensureRegistryBackend(
     })
 
     if (localRoute.delegate) {
-      // The v1 route is resolved WITHOUT the request here, so the descriptor
-      // alone cannot vouch for profile scope. Tag the delegate; dispatch
-      // scopes the path from the live request instead (#119411).
-      return { ...(await ensureBackend(profile, { passive, spawnPriority })), registryLocalDelegate: true }
+      // The v1 table decides per REQUEST (case 5/6): a mutation the server
+      // cannot scope keeps a pooled backend whose HERMES_HOME is the scope,
+      // everything else rides the shared host backend. Hand the request
+      // through so a registry-pinned destructive write is never collapsed
+      // onto the primary's home, and tag the descriptor so dispatch scopes
+      // the path from the same table (#119411, #119415, #119894).
+      const delegated = await ensureBackend(profile, { passive, request: opts.request, spawnPriority })
+
+      return { ...delegated, registryLocalDelegate: true }
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -17188,13 +17196,14 @@ async function dispatchRegistryApiRequest(
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
 
+  const routeRequest = { method: request?.method, path: request?.path }
   const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true, request: routeRequest })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
+        ensureRegistryBackend(registryConnectionId, routeProfile, '', { request: routeRequest, spawnPriority })
       )
 
-  const requestPath = resolveRegistryRequestPath(
+  const requestPath = pathForRegistryBackendRequest(
     request.path,
     requestProfile,
     connection,

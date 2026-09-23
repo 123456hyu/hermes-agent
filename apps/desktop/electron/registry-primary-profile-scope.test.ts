@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { pathForRegistryBackendRequest, resolveRegistryRequestPath } from './connection-config'
+import { pathForRegistryBackendRequest } from './connection-config'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
@@ -36,72 +36,41 @@ describe('primary-remote descriptor reuse keeps profile scope', () => {
   })
 })
 
-describe('registry local delegate keeps per-request profile scope (#119411)', () => {
-  it('scopes a delegated non-primary model write with ?profile=<profile>', () => {
-    // Settings → Models picker on a non-primary profile: the delegate branch
-    // resolves the backend WITHOUT the request, so the descriptor alone
-    // cannot vouch for scope. Dispatch must scope via the v1 table instead
-    // of leaving a bare path the server resolves to its launch home.
+describe('registry local delegate keeps per-request profile scope (#119411, #119415, #119894)', () => {
+  const delegate = { registryLocalDelegate: true }
+
+  it('scopes delegated reads and writes for another profile through the v1 route table', () => {
+    // Settings → Models / Capabilities on a non-primary profile through the
+    // registry 'local' pin: the shared host backend resolves a bare path to its
+    // LAUNCH home, so the selected profile must ride the wire.
     expect(
-      resolveRegistryRequestPath('/api/model/set', 'ro', { registryLocalDelegate: true }, {
-        requestMethod: 'POST',
-        requestPath: '/api/model/set'
-      })
+      pathForRegistryBackendRequest('/api/model/set', 'ro', delegate, { requestMethod: 'POST' })
     ).toBe('/api/model/set?profile=ro')
-  })
-
-  it('scopes a delegated non-primary model read with ?profile=<profile>', () => {
     expect(
-      resolveRegistryRequestPath('/api/model/info', 'atenea', { registryLocalDelegate: true }, {
-        requestMethod: 'GET',
-        requestPath: '/api/model/info'
-      })
-    ).toBe('/api/model/info?profile=atenea')
-  })
-
-  it('scopes the delegated primary on a scopable route (launch home may differ)', () => {
-    // resolveProfileBackendRoute drops the descriptor tag for the primary
-    // when resolved without a request, so a sharedPrimary-flag check alone
-    // leaves the primary bare — the #118432 case through the delegate.
+      pathForRegistryBackendRequest('/api/skills/toggle', 'orchestrator', delegate, { requestMethod: 'PUT' })
+    ).toBe('/api/skills/toggle?profile=orchestrator')
+    // The primary too: the attached host backend may have booted under another
+    // profile's home (#118432 through the delegate).
     expect(
-      resolveRegistryRequestPath('/api/config', 'default', { registryLocalDelegate: true }, {
-        primaryProfile: 'default',
-        requestMethod: 'GET',
-        requestPath: '/api/config'
-      })
+      pathForRegistryBackendRequest('/api/config', 'default', delegate, { primaryProfile: 'default' })
     ).toBe('/api/config?profile=default')
+    // An explicit cross-profile selector already on the path wins.
+    expect(pathForRegistryBackendRequest('/api/skills?profile=all', 'ro', delegate, {})).toBe(
+      '/api/skills?profile=all'
+    )
   })
 
-  it('leaves a delegated unscopable mutating request bare', () => {
-    // No ?profile= the handler reads: inventing one advertises a scope that
-    // is not doing the work.
+  it('never invents a scope the handler does not read, and leaves non-delegates unchanged', () => {
+    // A mutation the server cannot scope keeps its pooled backend (case 6):
+    // a `?profile=` here would advertise a scope that is not doing the work.
     expect(
-      resolveRegistryRequestPath('/api/custom-thing', 'ro', { registryLocalDelegate: true }, {
-        requestMethod: 'POST',
-        requestPath: '/api/custom-thing'
-      })
+      pathForRegistryBackendRequest('/api/custom-thing', 'ro', delegate, { requestMethod: 'POST' })
     ).toBe('/api/custom-thing')
-  })
-
-  it('keeps the non-delegate registry route byte-identical', () => {
-    expect(resolveRegistryRequestPath('/api/skills', 'acme', { sharedRemote: true }, {})).toBe(
+    expect(pathForRegistryBackendRequest('/api/skills', 'acme', { sharedRemote: true }, {})).toBe(
       '/api/skills?profile=acme'
     )
-    expect(
-      resolveRegistryRequestPath('/api/skills', 'acme', { sharedRemote: false, remoteProfile: null }, {})
-    ).toBe('/api/skills')
-  })
-
-  it('wires the delegate flag from ensureRegistryBackend into dispatch', () => {
-    const delegateStart = mainSource.indexOf('if (localRoute.delegate)')
-    expect(delegateStart).toBeGreaterThan(-1)
-    const delegateBranch = mainSource.slice(delegateStart, delegateStart + 400)
-    expect(delegateBranch).toContain('registryLocalDelegate: true')
-
-    const dispatchStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
-    expect(dispatchStart).toBeGreaterThan(-1)
-    const dispatchBody = mainSource.slice(dispatchStart, dispatchStart + 2500)
-    expect(dispatchBody).toContain('resolveRegistryRequestPath(')
-    expect(dispatchBody).toContain('profileRouteOptions(requestProfile, request)')
+    expect(pathForRegistryBackendRequest('/api/skills', 'acme', { sharedRemote: false, remoteProfile: null })).toBe(
+      '/api/skills'
+    )
   })
 })
