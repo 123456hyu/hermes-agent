@@ -529,10 +529,15 @@ class ToolRegistry:
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
         with self._lock:
-            return self._lookup(name, scope or self.current_scope_key())
+            return self._lookup(name, scope or self.current_scope_key(), explicit_scope=scope is not None)
 
-    def _lookup(self, name: str, scope_key: Optional[str]) -> Optional[ToolEntry]:
-        """``_merged_tools(scope_key).get(name)`` without building the merged dict."""
+    def _lookup(self, name: str, scope_key: Optional[str], *, explicit_scope: bool = True) -> Optional[ToolEntry]:
+        """``_merged_tools(scope).get(name)`` without building the merged dict. An implicit scope
+        (the caller passed none) also sees the current session's tool overlay, as the merge does."""
+        if not explicit_scope:
+            session_scoped = self._scoped_tools.get(current_session_tool_scope())
+            if session_scoped is not None and name in session_scoped:
+                return session_scoped[name]
         scoped = self._scoped_tools.get(scope_key)
         if scoped is not None and name in scoped:
             return scoped[name]
