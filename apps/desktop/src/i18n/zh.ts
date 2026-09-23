@@ -1768,7 +1768,7 @@ export const zh = defineLocale({
     sessions: {
       loading: '正在加载已归档会话…',
       archivedTitle: '已归档会话',
-      archivedIntro: '已归档对话会从侧边栏隐藏，但会保留全部消息。在侧边栏 Ctrl/⌘ 点击对话即可归档。',
+      archivedIntro: '已归档对话会从侧边栏隐藏，但会保留全部消息。在侧边栏 Alt/⌥+Shift 点击对话即可归档。',
       emptyArchivedTitle: '暂无归档',
       emptyArchivedDesc: '归档一个对话后会显示在这里。',
       unarchive: '取消归档',
@@ -3511,6 +3511,13 @@ export const zh = defineLocale({
     everythingSkipped: '已跳过',
     everythingRowFailed: '更新失败',
     everythingFanoutFailedTitle: '无法更新其他实例',
+    changeLogNew: '新增',
+    changeLogFixed: '修复',
+    changeLogFaster: '更快',
+    changeLogImproved: '改进',
+    changeLogOther: '其他改进',
+    changeLogFallbackLabel: '本次更新',
+    changeLogFallbackItem: '改进与修复',
     applyStatus: {
       preparing: '正在更新后端…',
       pulling: '后端更新中…',
@@ -4368,7 +4375,8 @@ export const zh = defineLocale({
     sudoTitle: '管理员密码',
     sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
     sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
-    sudoInstallDesc: 'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
+    sudoInstallDesc:
+      'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',

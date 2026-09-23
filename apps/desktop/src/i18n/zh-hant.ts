@@ -1410,7 +1410,7 @@ export const zhHant = defineLocale({
     sessions: {
       loading: '正在載入已封存工作階段…',
       archivedTitle: '已封存工作階段',
-      archivedIntro: '已封存的聊天會從側邊欄隱藏，但保留全部訊息。在側邊欄 Ctrl/⌘ 點擊聊天即可封存。',
+      archivedIntro: '已封存的聊天會從側邊欄隱藏，但保留全部訊息。在側邊欄 Alt/⌥+Shift 點擊聊天即可封存。',
       emptyArchivedTitle: '暫無封存',
       emptyArchivedDesc: '封存一個聊天後會顯示在這裡。',
       unarchive: '取消封存',
@@ -2805,6 +2805,13 @@ export const zhHant = defineLocale({
     everythingSkipped: '已略過',
     everythingRowFailed: '更新失敗',
     everythingFanoutFailedTitle: '無法更新其他執行個體',
+    changeLogNew: '新增功能',
+    changeLogFixed: '修復',
+    changeLogFaster: '更快',
+    changeLogImproved: '改進',
+    changeLogOther: '其他改進',
+    changeLogFallbackLabel: '本次更新',
+    changeLogFallbackItem: '改進與修復',
     applyStatus: {
       preparing: '正在更新後端…',
       pulling: '後端更新中…',
@@ -3566,7 +3573,8 @@ export const zhHant = defineLocale({
     sudoTitle: '管理員密碼',
     sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
     sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
-    sudoInstallDesc: 'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
+    sudoInstallDesc:
+      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',

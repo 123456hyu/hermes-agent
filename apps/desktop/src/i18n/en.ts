@@ -1831,7 +1831,7 @@ export const en: Translations = {
       loading: 'Loading archived sessions…',
       archivedTitle: 'Archived sessions',
       archivedIntro:
-        'Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to archive it.',
+        'Archived chats are hidden from the sidebar but keep all their messages. Alt/⌥+Shift-click a chat in the sidebar to archive it.',
       emptyArchivedTitle: 'Nothing archived',
       emptyArchivedDesc: 'Archive a chat to hide it here.',
       unarchive: 'Unarchive',
@@ -3659,6 +3659,13 @@ export const en: Translations = {
     everythingSkipped: 'Skipped',
     everythingRowFailed: 'Update failed',
     everythingFanoutFailedTitle: 'Couldn’t update other instances',
+    changeLogNew: "What's new",
+    changeLogFixed: 'Fixed',
+    changeLogFaster: 'Faster',
+    changeLogImproved: 'Improved',
+    changeLogOther: 'Other improvements',
+    changeLogFallbackLabel: 'In this update',
+    changeLogFallbackItem: 'Improvements and fixes',
     applyStatus: {
       preparing: 'Updating backend…',
       pulling: 'Backend updating…',
@@ -4758,7 +4765,8 @@ export const en: Translations = {
       'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
     sudoCommandUnavailable:
       'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
-    sudoInstallDesc: 'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
+    sudoInstallDesc:
+      'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',

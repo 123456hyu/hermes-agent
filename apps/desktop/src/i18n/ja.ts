@@ -1398,7 +1398,7 @@ export const ja = defineLocale({
       loading: 'アーカイブ済みセッションを読み込み中…',
       archivedTitle: 'アーカイブ済みセッション',
       archivedIntro:
-        'アーカイブ済みチャットはサイドバーでは非表示になりますが、すべてのメッセージは保持されます。サイドバーのチャットを Ctrl/⌘ クリックするとアーカイブできます。',
+        'アーカイブ済みチャットはサイドバーでは非表示になりますが、すべてのメッセージは保持されます。サイドバーのチャットを Alt/⌥+Shift クリックするとアーカイブできます。',
       emptyArchivedTitle: 'アーカイブがありません',
       emptyArchivedDesc: 'チャットをアーカイブするとここに表示されます。',
       unarchive: 'アーカイブを解除',
@@ -2833,6 +2833,13 @@ export const ja = defineLocale({
     everythingSkipped: 'スキップ',
     everythingRowFailed: '更新に失敗しました',
     everythingFanoutFailedTitle: '他のインスタンスを更新できませんでした',
+    changeLogNew: '新機能',
+    changeLogFixed: '修正',
+    changeLogFaster: '高速化',
+    changeLogImproved: '改善',
+    changeLogOther: 'その他の改善',
+    changeLogFallbackLabel: '今回の更新',
+    changeLogFallbackItem: '改善と修正',
     applyStatus: {
       preparing: 'バックエンドを更新しています…',
       pulling: 'バックエンドを更新中…',
@@ -3648,7 +3655,8 @@ export const ja = defineLocale({
       'sudo パスワードを入力する前にコマンドを確認してください。パスワードは実行するエージェントに送信され、このセッション中キャッシュされます。',
     sudoCommandUnavailable:
       'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
-    sudoInstallDesc: 'Bot Screen のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
+    sudoInstallDesc:
+      'Bot Screen のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
