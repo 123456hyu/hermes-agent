@@ -216,15 +216,16 @@ _FAST_MODE_BETA = "fast-mode-2026-02-01"
 _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 
 # Claude Code identity — OAuth requests without it intermittently 500. Anthropic rejects OAuth
-# requests whose user-agent version is too far behind the actual release (Fable 5.x models are
-# gated on Claude Code >= 2.1.251 and older identities get "Claude Code X does not support this
-# model"), so the installed version is detected, clamped to the floor below, and this fallback
-# kept current with the npm ``@anthropic-ai/claude-code`` latest dist-tag.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.266"
+# requests whose user-agent version is too far behind the actual release: each new model family
+# raises the minimum (Fable 5.x needed >= 2.1.251; Claude Opus 5.5 400s with
+# ``claude_code_version_too_old`` below 2.1.280), so the installed version is detected, clamped
+# to the floor below, and this fallback kept current with the npm ``@anthropic-ai/claude-code``
+# latest dist-tag.
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.280"
 # Oldest identity Anthropic accepts for the newest model families; a stale installed CLI would
 # otherwise undercut the fallback and re-break OAuth on exactly the machines that have Claude
 # Code installed.
-_CLAUDE_CODE_VERSION_FLOOR = (2, 1, 251)
+_CLAUDE_CODE_VERSION_FLOOR = (2, 1, 280)
 _claude_code_version_cache: Optional[str] = None
 
 # Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS

@@ -1962,15 +1962,17 @@ class TestClaudeCodeVersionFloor:
     def _detect_with_stdout(self, monkeypatch, stdout):
         import agent.anthropic_adapter as aa
         result = MagicMock(returncode=0, stdout=stdout)
+        monkeypatch.setattr(aa, "_claude_code_candidates", lambda: ["claude"])
         monkeypatch.setattr(aa.subprocess, "run", lambda *a, **k: result)
         return aa._detect_claude_code_version()
 
     def test_stale_installed_version_clamps_to_fallback(self, monkeypatch):
         import agent.anthropic_adapter as aa
-        assert self._detect_with_stdout(monkeypatch, "2.1.74 (Claude Code)") == aa._CLAUDE_CODE_VERSION_FALLBACK
+        # 2.1.278 clears the Fable 5.x gate but Opus 5.5 rejects it (claude_code_version_too_old).
+        assert self._detect_with_stdout(monkeypatch, "2.1.278 (Claude Code)") == aa._CLAUDE_CODE_VERSION_FALLBACK
 
     def test_recent_installed_version_wins(self, monkeypatch):
-        assert self._detect_with_stdout(monkeypatch, "2.1.260 (Claude Code)") == "2.1.260"
+        assert self._detect_with_stdout(monkeypatch, "2.1.290 (Claude Code)") == "2.1.290"
 
     def test_fallback_is_at_or_above_floor(self):
         import agent.anthropic_adapter as aa
