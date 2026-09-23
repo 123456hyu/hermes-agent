@@ -1780,7 +1780,13 @@ def _live_system_guard(request, monkeypatch):
         hermes_home, home = env.get("HERMES_HOME"), env.get("HOME")
         if not hermes_home or not home:
             return False
-        real_home = Path.home().resolve()
+        # The developer's account home from the passwd db: tests re-point ``Path.home`` at their
+        # tmp user dir, which would make a sandboxed child look like it runs against the real one.
+        try:
+            import pwd
+            real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        except (ImportError, KeyError):
+            real_home = Path.home().resolve()
         try:
             return (Path(home).resolve() != real_home
                     and not Path(hermes_home).resolve().is_relative_to(real_home))
