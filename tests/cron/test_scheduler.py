@@ -1065,9 +1065,12 @@ class TestRunJobConfigEnvVarExpansion:
     }
 
     def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
-        """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
+        """${VAR} in config.yaml model: is expanded from the PROFILE's own secret scope. The owner
+        bridge runs the job under that profile's runtime scope, where a process-env value would be
+        another profile's leak, so the ref resolves from ``<home>/.env`` and never os.environ."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
-        monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
+        (tmp_path / ".env").write_text("_HERMES_TEST_CRON_MODEL=gpt-4o-mini-cron-test\n")
+        monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "leaked-from-process-env")
 
         job = {"id": "env-job", "name": "env test", "prompt": "hi"}
         fake_db = MagicMock()

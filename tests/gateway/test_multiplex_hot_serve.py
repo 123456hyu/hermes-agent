@@ -70,6 +70,10 @@ def _runner(tmp_path, monkeypatch):
     runner._start_one_profile_adapters = _start
     runner._adapter_credential_fingerprint = lambda adapter: getattr(adapter, "token", None)
     runner._started = started
+    # The control socket's identify verb reads the runtime descriptor + ticket store that
+    # initialize_gateway_runtime installs; this adapters-only runner never ran it.
+    runner.session_runtime_descriptor = {"state": "ready", "served_profiles": [], "capabilities": []}
+    runner.session_ticket_store = None
     return runner, home
 
 
@@ -192,7 +196,7 @@ async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypat
 @pytest.mark.linux_only
 @pytest.mark.asyncio
 async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch):
-    from gateway.run import _start_gateway_start_control_socket
+    from gateway.run_bootstrap import _start_gateway_start_control_socket
     from gateway import control_socket
     runner, home = _runner(tmp_path, monkeypatch)
     secondary = _mkprofile(home, "worker")
