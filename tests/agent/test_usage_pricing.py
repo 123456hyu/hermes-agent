@@ -836,3 +836,39 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def _anthropic_usage(speed=None):
+    """Canonical usage from an Anthropic-shaped usage payload; ``speed`` rides ``raw_usage``."""
+    payload = {"input_tokens": 100_000, "output_tokens": 10_000, "cache_read_input_tokens": 200_000, "cache_creation_input_tokens": 50_000}
+    if speed:
+        payload["speed"] = speed
+    return normalize_usage(payload, provider="anthropic", api_mode="anthropic_messages")
+
+
+def test_anthropic_fast_mode_responses_price_from_the_fast_rate_row():
+    from agent.model_metadata import _ANTHROPIC_FAST_MODE_MODELS
+    from agent.usage_pricing import _ANTHROPIC_FAST_MODE_PRICING
+
+    # Every model the fast-mode gate sends ``speed`` to has a fast rate and a standard rate.
+    assert set(_ANTHROPIC_FAST_MODE_PRICING) == set(_ANTHROPIC_FAST_MODE_MODELS)
+    for model in _ANTHROPIC_FAST_MODE_MODELS:
+        standard_entry = get_pricing_entry(model, provider="anthropic")
+        assert standard_entry is not None
+        fast = estimate_usage_cost(model, _anthropic_usage("fast"), provider="anthropic")
+        standard = estimate_usage_cost(model, _anthropic_usage(), provider="anthropic")
+        assert fast.pricing_version == _ANTHROPIC_FAST_MODE_PRICING[model].pricing_version
+        assert standard.pricing_version == standard_entry.pricing_version
+        assert fast.amount_usd > standard.amount_usd
+        # A response the API reports as standard speed is billed like one without the field.
+        assert estimate_usage_cost(model, _anthropic_usage("standard"), provider="anthropic").amount_usd == standard.amount_usd
+    # Vendor-prefixed, dotted ids price from the same fast row.
+    assert estimate_usage_cost("anthropic/claude-opus-5.5", _anthropic_usage("fast"), provider="anthropic").amount_usd == (
+        estimate_usage_cost("claude-opus-5-5", _anthropic_usage("fast"), provider="anthropic").amount_usd
+    )
+
+
+def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
+    result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
+    assert result.amount_usd is None
+    assert result.status == "unknown"

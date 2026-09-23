@@ -180,6 +180,11 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
         "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
     }),
+    # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
+        "claude-opus-5": _OPUS,
+        "claude-opus-5-5": ("4.00", "20.00", "0.20", "5.00"),
+    }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
         "gpt-4.1": ("2.00", "8.00", "0.50"), "gpt-4.1-mini": ("0.40", "1.60", "0.10"),
@@ -287,6 +292,16 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
+# Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
+# prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.
+_ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
+    _model: _snap(*_rates, version="anthropic-fast-mode-2026-09", url=f"{_ANTHROPIC_URL}#fast-mode-pricing")
+    for _models, _rates in (
+        (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
+        (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
+    )
+    for _model in _models
+}
 del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 
 # GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
@@ -422,6 +437,17 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
     normalize = _MODEL_NORMALIZERS.get(route.provider)
     normalized = normalize(model) if normalize else model
     return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
+
+
+def _served_fast(usage: CanonicalUsage) -> bool:
+    """Anthropic names the speed that served a fast-mode request in ``usage.speed``."""
+    return isinstance(usage.raw_usage, dict) and usage.raw_usage.get("speed") == "fast"
+
+
+def _anthropic_fast_mode_entry(model: str) -> Optional[PricingEntry]:
+    name = model.lower()
+    return _ANTHROPIC_FAST_MODE_PRICING.get(name) or _ANTHROPIC_FAST_MODE_PRICING.get(
+        _normalize_anthropic_model_name(name))
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
@@ -588,6 +614,10 @@ def estimate_usage_cost(
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
+    if route.provider == "anthropic" and _served_fast(usage):
+        entry = _anthropic_fast_mode_entry(route.model)
+        if not entry:
+            return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
     if not entry:
         return _unknown_cost("none")
 
