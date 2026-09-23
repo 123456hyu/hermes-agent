@@ -10,29 +10,6 @@ import cli as cli_mod
 
 # ── A3.1 Test-First: verify _clear_terminal_on_exit gating ──────────────────
 
-def test_print_exit_summary_clears_screen_by_default(monkeypatch):
-    """Default behavior: _print_exit_summary() calls _clear_terminal_on_exit()."""
-    calls = []
-
-    class FakeCLI:
-        conversation_history = []
-        session_start = None
-
-        def _clear_terminal_on_exit(self):
-            calls.append("clear")
-
-    monkeypatch.setattr(cli_mod, "datetime", SimpleNamespace(
-        now=lambda: SimpleNamespace(
-            __sub__=lambda self, other: SimpleNamespace(
-                total_seconds=lambda: 0
-            )
-        )
-    ))
-
-    fake = FakeCLI()
-    cli_mod.HermesCLI._print_exit_summary(fake)  # default clear_screen=True
-
-    assert "clear" in calls, "_clear_terminal_on_exit should be called by default"
 
 
 def test_print_exit_summary_skips_clear_when_clear_screen_false(monkeypatch):

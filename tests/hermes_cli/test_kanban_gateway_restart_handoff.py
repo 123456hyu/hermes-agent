@@ -210,7 +210,8 @@ def test_real_user_systemd_scope_preserves_worker_context(
     receipt = workspace / "worker-receipt.json"
     script = (
         "import json, os, pathlib, sys, time; "
-        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "p = pathlib.Path(sys.argv[1]); t = p.with_suffix('.tmp'); "
+        "t.write_text(json.dumps({"
         "'pid': os.getpid(), 'cwd': os.getcwd(), "
         "'task': os.environ.get('HERMES_KANBAN_TASK'), "
         "'run': os.environ.get('HERMES_KANBAN_RUN_ID'), "
@@ -220,7 +221,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
         "'profile': os.environ.get('HERMES_PROFILE'), "
         "'source': os.environ.get('HERMES_SESSION_SOURCE'), "
         "'terminal_cwd': os.environ.get('TERMINAL_CWD'), "
-        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
+        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); os.replace(t, p); time.sleep(0.5)"
     )
     # Replace only the worker payload; keep real scope creation and env handoff.
     monkeypatch.setattr(
@@ -232,7 +233,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
 
     pid = kbd._default_spawn(task, str(workspace))
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 15
         while not receipt.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
 

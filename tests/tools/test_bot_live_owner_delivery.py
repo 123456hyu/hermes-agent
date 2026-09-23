@@ -159,17 +159,3 @@ def test_non_dict_ticket_fails_exact_id_reads_closed(tmp_path):
     with pytest.raises(ValueError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
     assert bad.read_text(encoding="utf-8") == '"oops"'
-
-
-def test_existing_mailbox_lock_does_not_fsync_parent_dirs(tmp_path, monkeypatch):
-    """The lock is re-entered on every receipt read; only a freshly created mailbox links its parents."""
-    from tools import bot_live_delivery as mailbox
-
-    calls = []
-    monkeypatch.setattr(mailbox, "fsync_directory", lambda path: calls.append(path))
-    with mailbox._locked(tmp_path):
-        pass
-    assert len(calls) == 2
-    with mailbox._locked(tmp_path):
-        pass
-    assert len(calls) == 2

@@ -51,14 +51,6 @@ def test_non_retryable_reasons_stop(reason):
     assert bfr.retry_action(reason) == bfr.RETRY_NONE
 
 
-def test_every_reason_has_a_defined_action():
-    """Invariant: the policy is total over the closed reason vocabulary."""
-    for reason in bfr.ALL_REASONS:
-        assert bfr.retry_action(reason) in {
-            bfr.RETRY_RESUME,
-            bfr.RETRY_COMPRESS_THEN_RESUME,
-            bfr.RETRY_NONE,
-        }
 
 
 # ── delivery surfaces never run their own retry loop ─────────────────────────

@@ -137,6 +137,8 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     from gateway.run import (_best_effort, _hermes_home, asyncio, logger, signal)
+    planned_stop_seen = [False]
+
     def shutdown_signal_handler(received_signal=None):
         # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
         def _takeover() -> bool:
@@ -156,6 +158,12 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
         planned_takeover = bool(_best_effort(_takeover, "Takeover marker check failed: %s"))
         planned_stop = received_signal == signal.SIGINT or (
             not planned_takeover and bool(_best_effort(_planned_stop, "Planned stop marker check failed: %s")))
+        # `hermes gateway stop` writes the marker, THEN signals: the planned-stop watcher can consume
+        # the marker in between, and the CLI's own SIGTERM must not then read as an external kill.
+        if planned_stop:
+            planned_stop_seen[0] = True
+        elif planned_stop_seen[0] and not planned_takeover:
+            planned_stop = True
         _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
@@ -573,7 +581,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if profile_homes:
         resolved_config._runtime_profile_homes = tuple(profile_homes)
     # PID file BEFORE adapters: of two concurrent `run --replace`, only the O_EXCL winner opens sockets.
-    if not _start_gateway_claim_pid_file(force=force or replace):
+    # Only --force skips the host-lock refusal. Every generated unit carries --replace, so reading it as
+    # --force there disabled the one arbiter of the two-units-at-once race; a replace that took the
+    # owner over already freed the lock with that process.
+    if not _start_gateway_claim_pid_file(force=force):
         release_gateway_runtime_lock()
         return False
 

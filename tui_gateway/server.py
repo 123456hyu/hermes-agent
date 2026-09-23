@@ -668,6 +668,11 @@ _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, 
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
+# True only when real stdout IS the JSON-RPC client channel (``tui_gateway.entry.main``, the stdio TUI).
+# `hermes serve` / dashboard processes speak JSON-RPC over WS only: their stdout is captured into
+# desktop.log, so a peer-less global broadcast (the change watcher keeps ticking after the last WS client
+# leaves) must be dropped there, not printed.
+_stdio_is_rpc_channel = False
 
 
 def register_live_transport(transport: Transport | None) -> None:
@@ -686,11 +691,15 @@ def unregister_live_transport(transport: Transport | None) -> None:
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
-    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
+    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports → ``_emit`` when stdout is the
+    stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink)."""
     with _live_transports_lock:
         targets = list(_live_transports)
     if not targets:
-        return _emit(event, "", payload)
+        if _stdio_is_rpc_channel:
+            return _emit(event, "", payload)
+        logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
+        return None
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:
@@ -1354,6 +1363,21 @@ def _turn_started_at(session: dict | None) -> float | None:
     return float(inflight["started_at"]) if isinstance(inflight, dict) and inflight.get("started_at") else None
 
 
+def _live_session_identity(session: dict) -> tuple[str, str]:
+    """``(model, provider)`` the live session actually runs — the same precedence ``_session_info`` reports:
+    a switch queued mid-turn, the metadata mirror, the built agent, the composer override a deferred record
+    carries. The profile default is the LAST resort, never the answer for a chat that made its own pick."""
+    pending = session.get("pending_model_switch") or {}
+    mirror = _metadata_mirror(session)
+    agent = session.get("agent")
+    override = session.get("model_override") or {}
+    model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
+             or getattr(agent, "model", "") or override.get("model") or _resolve_model())
+    provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
+                or getattr(agent, "provider", "") or override.get("provider") or "")
+    return str(model), str(provider or "")
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
@@ -1948,6 +1972,7 @@ from . import (  # noqa: E402
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
+    methods_display as _methods_display, methods_display_watch as _methods_display_watch,
     methods_onboarding as _methods_onboarding)
 
 for _m in (
@@ -1960,6 +1985,6 @@ for _m in (
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
-    _methods_connectors_account, _methods_onboarding):
+    _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding):
     _m.register(sys.modules[__name__])
 del _m

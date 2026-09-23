@@ -7,6 +7,7 @@ import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/ga
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { localCreationOptions } from '../canonicalGateway.js'
+import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
@@ -301,8 +302,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           if (flight !== attachmentFlight.current) {return null}
         }
 
+        // HERMES_TUI_CWD is the dashboard-picked workspace: an explicit cwd on
+        // session.create on both transports, so /new stays in that workspace.
+        const workspaceCwd = STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {}
+
         const r = await rpc<SessionCreateResponse>('session.create', gw.isCanonical
-          ? { request_id: randomUUID(), ...localCreationOptions() } : { cols: colsRef.current })
+          ? { request_id: randomUUID(), ...localCreationOptions(), ...workspaceCwd }
+          : { cols: colsRef.current, ...workspaceCwd })
 
         if (flight !== attachmentFlight.current) {
           discardStaleAttachment(r)

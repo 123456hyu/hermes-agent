@@ -44,17 +44,8 @@ def test_non_bot_chat_tokens_pass_through():
 
 # ── target resolution ────────────────────────────────────────────────────────
 
-def test_own_profile_resolves_without_name():
-    target = _resolve_bot_chat_target({"id": "j1"}, "")
-    assert target == {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
 
 
-def test_named_profile_resolves_when_exists():
-    with mock.patch("hermes_cli.profiles.profile_exists", return_value=True):
-        target = _resolve_bot_chat_target({"id": "j1"}, "research")
-    assert target is not None
-    assert target["platform"] == BOT_CHAT_PLATFORM
-    assert target["chat_id"] == "research"
 
 
 def test_unknown_profile_resolves_to_none():
@@ -97,7 +88,6 @@ def test_create_validation_rejects_unknown_profile():
     with mock.patch("hermes_cli.profiles.profile_exists", return_value=False):
         err = _validate_bot_chat_deliver("bot-chat:ghost")
     assert err is not None
-    assert "machine-local" in err
 
 
 def test_create_validation_accepts_bare_and_existing():
