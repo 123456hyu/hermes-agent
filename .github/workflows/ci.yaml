@@ -36,7 +36,9 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    # Checkout alone has taken >70s on a slow runner; a timeout here cancels
+    # detect and skips every lane, so leave headroom.
+    timeout-minutes: 5
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}
@@ -271,7 +273,9 @@ jobs:
           print(f'needs-json={json.dumps(compact)}')
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          # Only success/skipped pass. A cancelled or timed-out job (detect
+          # especially) skips every downstream lane, which must not read green.
+          failed = [name for name, info in needs.items() if info['result'] not in ('success', 'skipped')]
           for name, info in sorted(needs.items()):
               result = info['result']
               icon = '✅' if result in ('success', 'skipped') else '❌'
