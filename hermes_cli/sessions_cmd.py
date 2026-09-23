@@ -1040,8 +1040,8 @@ def cmd_sessions(args, sessions_parser=None):
             return
         if action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False):
             from hermes_state_holders import held_store_refusal
-            # Same resolver the SessionDB above opened, so the scan never depends on the db object.
-            refusal = held_store_refusal(_default_db_path(), command=action)
+            # Same path the SessionDB above opened, so the scan never depends on the db object.
+            refusal = held_store_refusal(path, command=action)
             if refusal:
                 print(refusal)
                 return 1
