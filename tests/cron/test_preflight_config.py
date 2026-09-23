@@ -178,7 +178,8 @@ class TestMissingProviderKeyBlocks:
                 raise AuthError("no key")
             return {**_RUNTIME, "provider": "openrouter"}
 
-        job = _job()
+        # Unpinned: a job carrying its own model is pinned (#100437) and gets no chain.
+        job = _job(model=None)
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
             success, output, final_response, error, agent_constructed = \
