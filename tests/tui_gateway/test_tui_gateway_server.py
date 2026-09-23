@@ -5338,6 +5338,9 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
     monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    # The reap's delegation check reads the session row from the launch store; open that handle
+    # before the timer fires so the wait below measures lock release, not a cold state.db open.
+    server._get_db()
     server._sessions["slow-orphan"] = _session(
         transport=server._detached_ws_transport,
         running=False,
