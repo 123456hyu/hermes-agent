@@ -243,12 +243,12 @@ class TestAzureIdentityPresence:
 
     def test_scoped_client_secret_detected(self, monkeypatch):
         describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
+        # Every AZURE_* read is scoped: a served profile's env-borrowed client/tenant id is the
+        # launch profile's identity, so the whole service-principal triplet comes from the scope.
+        for name in ("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_CLIENT_SECRET", "AZURE_FEDERATED_TOKEN_FILE"):
+            monkeypatch.delenv(name, raising=False)
         ss.set_multiplex_active(True)
-        with _Scope({"AZURE_CLIENT_SECRET": "scoped-secret"}):
+        with _Scope({"AZURE_CLIENT_ID": "cid", "AZURE_TENANT_ID": "tid", "AZURE_CLIENT_SECRET": "scoped-secret"}):
             info = describe(timeout_seconds=0.01, allow_install=False)
         assert any("EnvironmentCredential" in s for s in info.get("env_sources", []))
 

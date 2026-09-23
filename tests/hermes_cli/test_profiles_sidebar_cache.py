@@ -190,6 +190,10 @@ class SidebarCacheTests(unittest.TestCase):
             self.assertTrue(release.wait(timeout=2))
             return None
 
+        # The handler lazy-imports tui_gateway.server on first use (~1 s cold under a loaded host);
+        # pay that before the burst so the wait below measures coalescing, not import time.
+        import tui_gateway.server  # noqa: F401
+
         with mock.patch.object(profiles, "_profile_targets", return_value=[("default", Path("/nonexistent"))]), \
                 mock.patch.object(profiles, "_read_profile_db", side_effect=fake_read), \
                 ThreadPoolExecutor(max_workers=workers) as pool:
