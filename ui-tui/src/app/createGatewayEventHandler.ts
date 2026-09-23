@@ -28,6 +28,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
+import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
@@ -707,7 +708,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
     }
 
-    rpc<CommandsCatalogResponse>('commands.catalog', {})
+    // Bound to the live session when one exists (reconnect): project-local
+    // skills follow the session's repo. Before the first session the gateway
+    // uses the same workspace it seeds a new session with.
+    const catalogSid = getUiState().sid
+
+    rpc<CommandsCatalogResponse>('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
       .then(r => {
         if (!r?.pairs) {
           return
@@ -837,6 +843,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     switch (ev.type) {
+      case 'connection.request':
+        if (ev.payload) {
+          applyConnectionRequest(ev.payload)
+        }
+
+        return
+
+      case 'connection.update':
+        if (ev.payload) {
+          // The settling frame is the only record of how each app ended; the card is gone by then.
+          for (const line of applyConnectionUpdate(ev.payload)) {
+            sys(line)
+          }
+        }
+
+        return
+
       case 'gateway.ready':
         handleReady(ev.payload?.skin)
 
@@ -1339,7 +1362,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
           ev.payload.context ?? '',
-          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined
+          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined,
+          ev.payload.labels ?? undefined
         )
 
         return
@@ -1367,7 +1391,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.tool_id,
             ev.payload.name,
             ev.payload.duration_s ?? undefined,
-            resultText
+            resultText,
+            ev.payload.labels ?? undefined
           )
         } else {
           turnController.recordToolComplete(
@@ -1376,7 +1401,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.summary ?? undefined,
             ev.payload.duration_s ?? undefined,
             ev.payload.todos ?? undefined,
-            resultText
+            resultText,
+            ev.payload.labels ?? undefined
           )
         }
 
@@ -1670,7 +1696,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = failed
             ? [
                 ...finalMessages.filter(
-                  (m, i) => !(i === finalMessages.length - 1 && m.role === 'assistant' && isBareErrorText(m.text, payload.error))
+                  (m, i) =>
+                    !(
+                      i === finalMessages.length - 1 &&
+                      m.role === 'assistant' &&
+                      isBareErrorText(m.text, payload.error)
+                    )
                 ),
                 { role: 'assistant', text: describeTurnFailure(payload) }
               ]

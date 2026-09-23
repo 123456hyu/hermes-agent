@@ -415,7 +415,7 @@ from hermes_state_common import _ENDED_ROW_SQL, _ended_by_compression
 def reopen_on_connection(db, conn, session_id):
     if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
         return False
-    child = conn.execute('\n                SELECT 1\n                FROM sessions\n                WHERE parent_session_id = ?\n                ' + db._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias='') + '\n                LIMIT 1\n                ', (session_id, session_id, session_id)).fetchone()
+    child = conn.execute('\n                SELECT 1\n                FROM sessions\n                WHERE parent_session_id = ?\n                ' + db._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias='') + '\n                LIMIT 1\n                ', (session_id,) * 4).fetchone()
     if child is not None:
         return False
     now = time.time()

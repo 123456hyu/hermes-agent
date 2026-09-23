@@ -14,14 +14,16 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     if not replace:
         hermes_home = str(get_hermes_home())
         logger.error(
-            "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
-            "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+            "Another gateway instance is already running (PID %d, HERMES_HOME=%s) and did not "
+            "publish a host record this process could attach to.",
             existing_pid, hermes_home)
         print(
-            f"\n❌ Gateway already running (PID {existing_pid}).\n"
-            f"   Use 'hermes gateway restart' to replace it,\n"
-            f"   or 'hermes gateway stop' to kill it first.\n"
-            f"   Or use 'hermes gateway run --replace' to auto-replace.\n")
+            f"\n❌ A gateway already owns this host (PID {existing_pid}).\n"
+            f"   One gateway per host serves every profile, so there is nothing to start here.\n"
+            f"   Attach is impossible: PID {existing_pid} published no usable host record\n"
+            f"   (an older build, or an unwritable lock directory).\n"
+            f"   Take the host over:  hermes gateway run --replace\n"
+            f"   Or stop it first:    hermes gateway stop\n")
         return False
 
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).
@@ -182,13 +184,19 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
 
             _best_effort(_log_context, "format_context_for_log failed: %s")
             _best_effort(_diagnostic, "spawn_async_diagnostic failed: %s")
+        if not planned_takeover:
+            # Supervisor/operator SIGNAL stop (bootout, kickstart -k, systemd, s6, bare kill) — the
+            # only kind launchd times with ExitTimeOut. In-band SIGUSR1 restarts never pass through
+            # here, and a sibling-driven --replace takeover is not launchd-timed either, so both
+            # keep the configured drain. _stop_impl uses this to cap the drain to the live budget.
+            runner._stop_requested_by_signal = True
         asyncio.create_task(runner.stop())
     return shutdown_signal_handler
 
 
-def _start_gateway_claim_pid_file() -> bool:
+def _start_gateway_claim_pid_file(force: bool = False) -> bool:
     """Claim the runtime lock + PID file (O_EXCL winner is the authoritative gateway). False = lost."""
-    from gateway.run import (logger, os)
+    from gateway.run import (_claim_host_gateway_role, logger, os)
     import atexit
     from gateway.status import (
         acquire_gateway_runtime_lock, get_running_pid, release_gateway_runtime_lock,
@@ -209,6 +217,7 @@ def _start_gateway_claim_pid_file() -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+    _claim_host_gateway_role(force=force)
     return True
 
 
@@ -226,6 +235,7 @@ async def _start_gateway_start_control_socket(runner):
         # this feature. See #92091.
         from gateway.control_socket import GatewayControlServer, build_identify_payload
         from gateway.run_profile_reconcile import migrate_profile_identity_verb, purge_profile_identity_verb
+        from gateway.run_plugin_rewire import reload_plugins_verb
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
@@ -287,7 +297,10 @@ async def _start_gateway_start_control_socket(runner):
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
-                           "purge-profile-identity": purge_profile_identity_verb(runner)})
+                           "purge-profile-identity": purge_profile_identity_verb(runner),
+                           # A plugin installed/enabled by another process loads now and re-wires the
+                           # live adapters' handlers (#87770); tools/prompt still wait for the next session.
+                           "reload-plugins": reload_plugins_verb(runner, _main_loop)})
         _control_server.ticket_store = runner.session_ticket_store
         if not await _control_server.start():
             _control_server = None
@@ -305,34 +318,42 @@ async def _start_gateway_start_control_socket(runner):
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
-    from gateway.run import (Dict, Platform, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
+    from gateway.run import (Dict, Platform, _cron_profile_gate, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
     # The event loop is passed so cron delivery can use live adapters (E2EE support).
     from cron.scheduler_provider import (
         InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
     cron_stop = threading.Event()
-    multiplex_cron = bool(getattr(runner.config, "multiplex_profiles", False))
+    # ONE gateway process per host multiplexes every profile, so its cron ticker owns EVERY
+    # profile's store — `gateway.multiplex_profiles` gates adapters, not cron. Gating the tick set
+    # on that flag left every non-launch profile's jobs in a store no ticker visited: they
+    # silently never fired.
+    try:
+        cron_profile_homes = _cron_tick_profile_homes(runner.config)
+    except Exception as exc:
+        logger.warning("Could not resolve profile homes for cron: %s", exc)
+        cron_profile_homes = []
+    # External providers own one unscoped remote registry, so they can only serve a single home.
     cron_provider = scheduler_for_profile_mode(
-        resolve_cron_scheduler(), multiplex_profiles=multiplex_cron)
+        resolve_cron_scheduler(), multiplex_profiles=len(cron_profile_homes) > 1)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
-    # Multiplex: tell the ticker which profile homes to tick, else secondary profiles' jobs never run.
-    if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
-        try:
-            profile_homes = _cron_tick_profile_homes(runner.config)
-            if profile_homes:
-                # Live enumerator: re-read per cycle so a hot-served profile's jobs fire without a restart.
-                cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
-                # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
-                cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
-                # runner.adapters belongs to the LAUNCH profile (default, or the --profile name); naming
-                # it keeps the ticker from routing a secondary's cron through that bot and lets a named
-                # multiplexer's own jobs reuse its live adapters.
-                cron_start_kwargs["default_profile"] = runner._primary_profile_name
-                logger.info(
-                    "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
-                    [p[0] if isinstance(p, tuple) else p for p in profile_homes])
-        except Exception as exc:
-            logger.warning("Could not resolve profile homes for multiplex cron: %s", exc)
+    if isinstance(cron_provider, InProcessCronScheduler) and cron_profile_homes:
+        # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
+        # the gateway runs gets its jobs fired without a restart (hot-serve).
+        cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
+        # Stand down, per tick, for a profile whose OWN gateway process ticks it.
+        cron_start_kwargs["profile_gate"] = _cron_profile_gate
+        # Per-profile adapters so each profile's cron output goes via its own bot, not the
+        # default's. Absent (no multiplexed adapters), delivery for a secondary profile falls
+        # back to the primary's routed adapters or fails closed — the job still FIRES.
+        cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
+        # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
+        # name); naming it keeps the ticker from routing a secondary's cron through that bot
+        # and lets a named multiplexer's own jobs reuse its live adapters.
+        cron_start_kwargs["default_profile"] = runner._primary_profile_name
+        logger.info(
+            "Cron scheduler will tick %d profile(s): %s", len(cron_profile_homes),
+            [p[0] if isinstance(p, tuple) else p for p in cron_profile_homes])
 
     # Only the in-process ticker polls local due jobs, so only it gets the external-drain dispatch gate.
     if isinstance(cron_provider, InProcessCronScheduler):
@@ -412,8 +433,12 @@ async def _start_gateway_shutdown_tail(
     _planned_stop_watcher_stop.set()
     _planned_stop_watcher_thread.join(timeout=2)
 
-    with suppress(Exception):
-        await _shutdown_mcp_servers_nonblocking()
+    # Never suppressed: a raise here is a real teardown failure (it once hid a changed signature,
+    # leaving every MCP connection and the shared loop up while the gateway reported a clean exit).
+    try:
+        await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
+    except Exception:
+        logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
 
     # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
     # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
@@ -440,9 +465,11 @@ def _launch_home_may_multiplex() -> bool:
     raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
+async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
+                        verbosity: Optional[int] = 0, force: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
-    systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop deadlocks)."""
+    systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
+    deadlocks); ``force`` starts without consulting the host owner at all."""
     from gateway.run import (
         GatewayRunner,
         _best_effort,
@@ -450,11 +477,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _enable_multiplex_log_routing,
         _ensure_windows_gateway_venv_imports,
         _gateway_loop_exception_handler,
+        _host_attach_or_none,
+        _log_standalone_profiles_at_boot,
         _multiplex_profile_homes,
+        _refresh_host_gateway_record,
         _resolve_gateway_exit_verdict,
         _run_planned_stop_watcher,
         _shutdown_gateway_health_export,
         _shutdown_mcp_servers_nonblocking,
+        _start_gateway_make_restart_signal_handler,
         asyncio,
         get_hermes_home,
         load_gateway_config_for_runner,
@@ -482,7 +513,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if profile_homes and not _launch_home_may_multiplex():
         return False
 
-    # Duplicate-instance guard scoped to HERMES_HOME; distinct-home multi-profile setups coexist.
+    # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
+    # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
+    _host_decision = await _host_attach_or_none(replace, force)
+    if _host_decision is not None:
+        return _host_decision
+
+    # Duplicate-instance guard scoped to HERMES_HOME (the host record is absent or unusable here).
     from gateway.status import get_running_pid
     existing_pid = get_running_pid()
     if (existing_pid is not None and existing_pid != os.getpid()
@@ -516,7 +553,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Freeze discovery: later profile additions must restart and reserve before opening stores.
     if profile_homes:
         resolved_config._runtime_profile_homes = tuple(profile_homes)
-    if not _start_gateway_claim_pid_file():
+    # PID file BEFORE adapters: of two concurrent `run --replace`, only the O_EXCL winner opens sockets.
+    if not _start_gateway_claim_pid_file(force=force or replace):
         release_gateway_runtime_lock()
         return False
 
@@ -543,8 +581,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         shutdown_signal_handler = _start_gateway_make_shutdown_signal_handler(
             runner, _signal_initiated_shutdown)
 
-        def restart_signal_handler():
-            runner.request_restart(detached=False, via_service=True)
+        restart_signal_handler = _start_gateway_make_restart_signal_handler(runner)
 
         loop = asyncio.get_running_loop()
 
@@ -589,6 +626,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _control_server = await _start_gateway_start_control_socket(runner)
         if _control_server is None:
             raise RuntimeError("gateway session bootstrap control listener unavailable")
+        # Now the attach channel answers: republish the host record with the settled served set.
+        _refresh_host_gateway_record(runner)
+        _log_standalone_profiles_at_boot(runner)
         from gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
 
@@ -627,7 +667,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         def _recover_pending() -> None:
             from gateway.shutdown_flush import recover_pending_to_db
-            recovered = recover_pending_to_db()
+            recovered = recover_pending_to_db(
+                session_resolver=runner.session_store.resolve_session_id_for_key,
+            )
             if recovered:
                 logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 
@@ -644,8 +686,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # Startup aborted by restart/shutdown before running mode; preserve that path without starting cron.
             try:
                 await runner.wait_for_shutdown()
-                with suppress(Exception):
-                    await _shutdown_mcp_servers_nonblocking()
+                try:
+                    await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
+                except Exception:
+                    logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
                 return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
             finally:
                 _shutdown_gateway_health_export(runner)

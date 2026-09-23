@@ -74,6 +74,10 @@ class GatewayTurnPrepareMixin:
                     explicit_api_key=key, explicit_base_url=policy.base_url, target_model=policy.model)
             return policy.model, _runtime_agent_kwargs(runtime)
         skey = self._resolve_session_key_or_none(source, session_key)
+        # Every exit path starts clean: the /model-override fast path returns before the pop below,
+        # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
+        # notice must never attach to another session's next turn (#74349).
+        self._pre_agent_fallback_notice = None
 
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -113,6 +117,9 @@ class GatewayTurnPrepareMixin:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
+        # runner surfaces it through the agent's one-shot fallback notice (#74349).
+        self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
@@ -129,7 +136,7 @@ class GatewayTurnPrepareMixin:
                 if ch.model:
                     model = ch.model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
@@ -339,8 +346,12 @@ class GatewayTurnPrepareMixin:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
             # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index).
-            switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+            # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
+            # awaits above are a window for /new or /resume to move the route; the CAS on the
+            # snapshot id lets that win instead of being clobbered by a stale binding.
+            switched = await self.async_session_store.switch_session(
+                session_key, bound_session_id, expected_session_id=session_entry.session_id,
+            )
             if switched is not None:
                 session_entry = switched
         if bound_session_id and bound_session_id != stored_session_id:
@@ -401,7 +412,7 @@ class GatewayTurnPrepareMixin:
 
         try:
             should_notify = reset_reason == "suspended"
-            adapter = self._adapter_for_source(source) if should_notify else None
+            adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
                 notice = (
                     "◐ Session reset after being stopped. "
@@ -538,9 +549,11 @@ class GatewayTurnPrepareMixin:
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the platform event time as message metadata and keep the persisted transcript
-        clean (strip any leading timestamp prefix) regardless of the toggle; only the in-context
+        clean — strip any leading timestamp prefix and the Discord triggering-message note (a
+        model instruction, not authored text) — regardless of the toggle; only the in-context
         RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
+        from gateway.run_inbound import strip_discord_triggering_note
         persist_user_message = None
         persist_user_timestamp = None
         try:
@@ -553,7 +566,7 @@ class GatewayTurnPrepareMixin:
             _evt_tz = _get_evt_tz()
             if message_text and isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(message_text, tz=_evt_tz)
-                persist_user_message = _clean_message_text
+                persist_user_message = strip_discord_triggering_note(event, _clean_message_text)
                 _event_epoch = _coerce_msg_ts(getattr(event, "timestamp", None), tz=_evt_tz)
                 persist_user_timestamp = _event_epoch if _event_epoch is not None else _embedded_ts
                 if _message_timestamps_enabled(_load_gateway_config()):
@@ -658,7 +671,7 @@ class GatewayTurnPrepareMixin:
 
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
         # by the run that registered them.
-        self._bind_adapter_run_generation(self._adapter_for_source(source), session_key, run_generation)
+        self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
         # Delivery IDs are only unique in their transport namespace. Keyless turns
         # need their own identity, even when another process writes to this session.
         import uuid

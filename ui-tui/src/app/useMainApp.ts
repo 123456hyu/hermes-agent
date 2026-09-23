@@ -58,6 +58,7 @@ import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
+import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
@@ -615,6 +616,7 @@ export function useMainApp(gw: GatewayClient) {
 
     let stopped = false
     applyAgentSnapshot(ui.sid)
+    applyProcessSnapshot(ui.sid)
 
     const refresh = () => {
       const sid = ui.sid
@@ -624,6 +626,16 @@ export function useMainApp(gw: GatewayClient) {
 
           if (!stopped && result && getUiState().sid === sid) {
             applyAgentSnapshot(sid, result)
+          }
+        })
+        .catch(() => {})
+      // Background processes share the dock with the subagents (Processes block).
+      gw.request<{ processes: ProcessEntry[] }>('process.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<{ processes: ProcessEntry[] }>(raw)
+
+          if (!stopped && result && getUiState().sid === sid) {
+            applyProcessSnapshot(sid, result.processes ?? [])
           }
         })
         .catch(() => {})

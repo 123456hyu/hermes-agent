@@ -107,9 +107,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    # No code is replaced in this simulation. A real purge would discard the
-    # discovery patches below and reimport helpers that can reach live services.
-    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
     from hermes_cli import update_cmd_fleet, update_inventory, update_receipt
 
     monkeypatch.setattr(

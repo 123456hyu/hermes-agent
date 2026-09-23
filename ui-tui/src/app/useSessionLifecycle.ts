@@ -23,6 +23,7 @@ import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
+import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
@@ -64,12 +65,14 @@ export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg
   const user = String(inflight?.user ?? '').trim()
 
   return user
-    ? toTranscriptMessages([{
-        role: 'user',
-        text: user,
-        ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
-        ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
-      }])
+    ? toTranscriptMessages([
+        {
+          role: 'user',
+          text: user,
+          ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
+          ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
+        }
+      ])
     : []
 }
 
@@ -406,6 +409,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
+      // The card belongs to the session being left; the activated one answers with its own.
+      clearConnectionOperation()
 
       const pendingDetach = canonicalDetachFlights.current.get(id)
 
@@ -454,6 +459,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           // still-pending approval/clarify prompts are the only way they come back.
           gw.hydrateSharedPrompts?.(r)
           hydrateLiveSessionInflight(r.inflight)
+
+          if (r.pending_connection) {
+            applyConnectionRequest(r.pending_connection)
+          }
+
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
           adoptAttachment(r, previousSid, previousSubscription)
@@ -541,6 +551,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             })
             gw.hydrateSharedPrompts?.(r)
             hydrateLiveSessionInflight(r.inflight)
+
+            if (r.pending_connection) {
+              applyConnectionRequest(r.pending_connection)
+            } else {
+              clearConnectionOperation()
+            }
+
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 

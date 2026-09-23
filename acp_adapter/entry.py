@@ -157,6 +157,14 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
         return 1
 
 
+def _warm_memory_provider_import(logger: logging.Logger) -> None:
+    """Import ``memory.provider``'s module + numpy (no provider instance) before the ACP threads start."""
+    from plugins.memory import import_memory_provider_module
+
+    if not import_memory_provider_module():
+        logger.debug("memory provider not warmed (none configured or import failed; agent init reports that)")
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
@@ -182,6 +190,13 @@ def main(argv: list[str] | None = None) -> None:
     import acp
     from .server import HermesACPAgent
 
+    # Windows: import the configured memory provider (and numpy) on the main thread before
+    # the ACP stdin-reader thread starts. A first-time native-extension import racing another
+    # thread's import chain deadlocked in create_module and session/new never answered (#58083).
+    if sys.platform == "win32":
+        _warm_memory_provider_import(logger)
+
+    # MCP discovery and execution belong to the gateway daemon; this process is a viewer.
     agent = HermesACPAgent()
 
     async def serve():

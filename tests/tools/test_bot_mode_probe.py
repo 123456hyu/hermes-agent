@@ -53,6 +53,24 @@ def test_roster_excludes_infra_dirs_and_tombstones(tmp_path):
     assert not any(f"`@{s}`" in section for s in ("sessions", "logs", "ghost", ".deleted"))
 
 
+def test_roster_excludes_dirs_failing_the_profile_id_regex(tmp_path):
+    """#116905: a directory carrying an identity marker but named like anything other than a
+    profile id (a parked backup, a dotfile staging dir) is not a teammate. ``profile list``
+    hides such dirs via ``_PROFILE_ID_RE``; the roster must agree with that predicate."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    for stray in ("_backup_removed_20260920", ".staging-area"):
+        d = home / "profiles" / stray
+        d.mkdir()
+        (d / "config.yaml").write_text("model:\n  name: test\n", encoding="utf-8")
+
+    assert [name for name, _ in bot_mode_probe._roster(home)] == ["default", "researcher"]
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section
+    assert not any(f"`@{s}`" in section for s in ("_backup_removed_20260920", ".staging-area"))
+
+
 def test_silent_when_no_profile_is_bot_managed(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -292,3 +310,20 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+def test_roster_resolves_default_to_root_home_over_stray_directory(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    # A stray profiles/default/ directory must not shadow the reserved root home.
+    stray = home / "profiles" / "default"
+    stray.mkdir()
+    (stray / "state.db").write_bytes(b"")
+
+    roster = bot_mode_probe._roster(home)
+    homes = dict(roster)
+    assert homes["default"] == home
+    assert homes["researcher"] == home / "profiles" / "researcher"
+    names = [name for name, _ in roster]
+    assert names.count("default") == 1
