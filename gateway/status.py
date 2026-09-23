@@ -1404,11 +1404,6 @@ def get_runtime_status_running_pid(
     pid = _live_pid_from_record(payload)
     if pid is None:
         return None
-    # A record we wrote ourselves earlier in this boot (the multiplex verdict is persisted before
-    # the PID claim) is not a rival gateway; reporting it made a restart over a SIGKILLed owner
-    # lose the "PID file race" to its own process and skip the stale gateway.pid cleanup.
-    if pid == os.getpid():
-        return None
     # The record's hermes_home must match the home asked about (this process unscoped) so a stale
     # or copied record cannot lend another home's gateway identity; legacy records without the
     # stamp prove nothing either way and fall through to the live command-line check.
@@ -1922,9 +1917,12 @@ def get_running_pid(
         if expected_home is None or not saw_live_pid:
             _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return get_runtime_status_running_pid() if pid_path is None else None
-    # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.
+    # Lock inactive: the runtime-status fallback runs BEFORE cleanup here. A record naming THIS
+    # process is one we wrote earlier in our own boot (the multiplex verdict is persisted before
+    # the PID claim), not a rival: treating it as live skipped the stale gateway.pid cleanup after
+    # a SIGKILLed owner and the O_EXCL claim then lost the "PID file race" to itself.
     runtime_pid = get_runtime_status_running_pid() if pid_path is None else None
-    if runtime_pid is None:
+    if runtime_pid is None or runtime_pid == os.getpid():
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     return runtime_pid
 
