@@ -228,14 +228,18 @@ class TestWinPtyBridgeIO:
     async def test_write_sends_to_child_stdin(self):
         # python -c reads stdin, echoes a marker, exits.  More reliable than
         # ``cat`` (not on Windows) and doesn't depend on a particular shell.
+        # The child announces READY once it is about to read stdin; bytes
+        # written before that reach the console, not the child (#98556).
         script = (
             "import sys; "
+            "sys.stdout.write('READY\\n'); sys.stdout.flush(); "
             "line = sys.stdin.readline().strip(); "
             "sys.stdout.write('GOT:' + line + '\\n'); "
             "sys.stdout.flush()"
         )
         bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
         try:
+            assert b"READY" in _read_until(bridge, b"READY")
             assert await bridge.write(b"hello-pty\r\n") is True
             output = _read_until(bridge, b"GOT:hello-pty")
             assert b"GOT:hello-pty" in output
