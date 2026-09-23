@@ -7,10 +7,11 @@ import ipaddress
 import math
 import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
-from gateway.runtime_contract import RuntimeState
+if TYPE_CHECKING:
+    from gateway.runtime_contract import RuntimeState
 
 
 @dataclass(frozen=True)
