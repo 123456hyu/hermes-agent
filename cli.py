@@ -1607,9 +1607,7 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
         # GC stale worktrees AFTER _setup_worktree so they never race on git's worktree
         # metadata (the new tree is immune: <24h age gate + live pid lock); then repack
         # once refs are final so lookups stay fast on multi-agent boxes.
-        _repo = _git_repo_root()
-        if _repo:
-            threading.Thread(target=_worktree_maintenance, args=(_repo,), name="worktree-prune", daemon=True).start()
+        threading.Thread(target=_worktree_maintenance, args=(info["repo_root"],), name="worktree-prune", daemon=True).start()
         return info
 
     return _join_worktree

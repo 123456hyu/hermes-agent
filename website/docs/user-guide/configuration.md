@@ -963,6 +963,12 @@ worktree_sync: true    # Default — branch from the fetched remote tip
 # worktree_sync: false # Branch from local HEAD (offline / pinned base)
 ```
 
+**Working on Hermes itself?** Worktrees hang off the repo you run `hermes -w` in, and that must not be the checkout your gateway runs from (`~/.hermes/hermes-agent` on a git install): the trees share its `.git`, agents inherit it as their working directory, and one `git checkout` or `git merge` there swaps the running gateway's code out from under it. Hermes refuses to root a worktree in that checkout while a gateway is running from it. Keep a separate dev clone and point worktrees at it from anywhere:
+
+```yaml
+worktree_repo_root: ~/.hermes/dev/hermes-agent   # dev clone; `hermes -w` uses it regardless of cwd
+```
+
 You can also list gitignored files to copy into worktrees via `.worktreeinclude` in your repo root:
 
 ```

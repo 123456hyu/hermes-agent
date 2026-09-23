@@ -70,6 +70,70 @@ def _git_repo_root() -> Optional[str]:
         return None
 
 
+def _install_checkout_root() -> Optional[Path]:
+    """The checkout this process runs from, when it is a git checkout (the one ``hermes update`` moves)."""
+    root = Path(__file__).resolve().parent.parent
+    return root if (root / ".git").exists() else None
+
+
+def resolve_worktree_repo_root(repo_root: Optional[str] = None) -> Optional[str]:
+    """Pick the repo worktrees hang off: ``worktree_repo_root`` config, else *repo_root*, else CWD's.
+
+    Refuses the install checkout while a gateway is running from it. Worktrees under it share
+    its ``.git``, and lanes inherit it as cwd, so a ``git checkout``/``merge`` one directory up
+    swaps the running gateway's code (a lane detached the live tree onto ``origin/main`` for 14 s
+    and fast-forwarded ``main`` under a gateway that then ran stale modules for ten hours).
+    Prints the reason and returns None on refusal.
+    """
+    from hermes_cli.config import load_config
+    try:
+        configured = (load_config().get("worktree_repo_root") or "").strip()
+    except Exception:
+        configured = ""
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not (candidate / ".git").exists():
+            _cprint(f"\033[31m✗ worktree_repo_root is not a git checkout: {candidate}\033[0m")
+            print("  Clone the repo there, or fix `worktree_repo_root` in config.yaml.")
+            return None
+        return str(candidate.resolve())
+
+    repo_root = repo_root or _git_repo_root()
+    if not repo_root:
+        return None
+    install = _install_checkout_root()
+    if install is None or Path(repo_root).resolve() != install:
+        return repo_root
+    if not _gateway_runs_from(install):
+        return repo_root
+    _cprint(f"\033[31m✗ {install} is the running gateway's checkout — refusing to root worktrees in it.\033[0m")
+    print("  Only `hermes update` should move this tree. Use a separate dev clone:")
+    print("    git clone https://github.com/NousResearch/hermes-agent ~/.hermes/dev/hermes-agent")
+    print("    hermes config set worktree_repo_root ~/.hermes/dev/hermes-agent")
+    return None
+
+
+def _gateway_runs_from(checkout: Path) -> bool:
+    """True when this home's live gateway process executes code under *checkout*."""
+    from gateway.status import get_running_pid
+    pid = get_running_pid(cleanup_stale=False)
+    if pid is None:
+        return False
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        candidates = [proc.cwd(), *proc.cmdline()]
+    except Exception:
+        return False
+    for raw in candidates:
+        try:
+            if _path_is_within_root(Path(raw).resolve(), checkout):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def _path_is_within_root(path: Path, root: Path) -> bool:
     """Return True when a resolved path stays within the expected root."""
     try:
@@ -392,7 +456,7 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
     return base_ref, base_label
 
 
-def _setup_worktree(repo_root: str = None, sync_base: bool = True,
+def _setup_worktree(repo_root: Optional[str] = None, sync_base: bool = True,
                     name: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree -> ``{path, branch, repo_root, base}``, or None on failure.
 
@@ -402,10 +466,11 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
 
     Set ``worktree_sync: false`` in config to branch from local ``HEAD`` (the pre-#10760-followup behavior).
     """
-    repo_root = repo_root or _git_repo_root()
+    repo_root = resolve_worktree_repo_root(repo_root)
     if not repo_root:
-        _cprint("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
-        print("  cd into your project repo first, then run hermes -w")
+        if not _git_repo_root():
+            _cprint("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
+            print("  cd into your project repo first, then run hermes -w")
         return None
 
     wt_name = ((name and re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")[:40])

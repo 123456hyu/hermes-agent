@@ -54,6 +54,10 @@ tree. `/worktree` alone shows the active tree; `/worktree list` lists all of
 them. On exit the tree is kept only if it has unpushed commits, exactly like
 `hermes -w`.
 
+Developing Hermes itself: set `worktree_repo_root` to a dev clone so worktrees never hang
+off the checkout your gateway runs from (Hermes refuses that while the gateway is up); see
+[Configuration](configuration.md#git-worktree-isolation).
+
 ### Manually with git
 
 From your main repository (containing `.git/`), create a new worktree for a feature branch:
