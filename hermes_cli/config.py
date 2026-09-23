@@ -1051,6 +1051,8 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
+    # Worktree flags read by cli.py / hermes_cli/worktree_ops.py (flat, optional)
+    "worktree", "worktree_sync", "worktree_repo_root",
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
