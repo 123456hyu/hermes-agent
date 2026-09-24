@@ -508,28 +508,38 @@ class TestCwdExecutableSearch:
 
     @pytest.mark.windows_only
     def test_planted_cwd_binary_loses_after_bootstrap(self, tmp_path):
-        """Live repro: a zero-byte ``cmd.exe`` planted in the child's cwd. Without the switch
-        CreateProcess picks it (WinError 193) and ``shutil.which`` reports the cwd copy; after
-        ``import hermes_bootstrap`` the real System32 ``cmd`` runs and ``which`` skips the cwd."""
-        (tmp_path / "cmd.exe").write_bytes(b"")
+        """Live repro with a PATH program (the ``git``/``rg``/``node`` shape): a real ``probe.exe``
+        (a copy of cmd.exe) on PATH and a zero-byte ``probe.exe`` planted in the child's cwd.
+        Legacy: CreateProcess picks the planted copy (WinError 193) and ``shutil.which`` reports
+        it; after ``import hermes_bootstrap`` the PATH copy runs and ``which`` skips the cwd.
+        A system32 name (``cmd``) is no repro: Windows walks the system dirs before the cwd."""
+        real_bin = tmp_path / "bin"
+        real_bin.mkdir()
+        import shutil
+
+        shutil.copy(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe", real_bin / "probe.exe")
+        planted = tmp_path / "repo"
+        planted.mkdir()
+        (planted / "probe.exe").write_bytes(b"")
         root = str(Path(__file__).resolve().parents[1])
         env = {k: v for k, v in os.environ.items()
                if k not in ("NoDefaultCurrentDirectoryInExePath", "HERMES_CWD_EXE_SEARCH")}
+        env["PATH"] = str(real_bin) + os.pathsep + env.get("PATH", "")
         probe = textwrap.dedent("""
             import os, shutil, subprocess, sys
             sys.path.insert(0, sys.argv[1])
             if sys.argv[2] == "hardened":
                 import hermes_bootstrap
             try:
-                out = subprocess.run(["cmd", "/c", "echo ok"], capture_output=True, text=True, timeout=30).stdout.strip()
+                out = subprocess.run(["probe", "/c", "echo ok"], capture_output=True, text=True, timeout=30).stdout.strip()
             except OSError as exc:
                 out = f"spawn-failed:{exc.winerror}"
-            which = shutil.which("cmd") or ""
+            which = shutil.which("probe") or ""
             print(out, "|", os.path.abspath(which).lower().startswith(os.getcwd().lower()))
         """).strip()
 
         def run(mode: str) -> str:
-            result = subprocess.run([sys.executable, "-c", probe, root, mode], cwd=tmp_path, env=env,
+            result = subprocess.run([sys.executable, "-c", probe, root, mode], cwd=planted, env=env,
                                     capture_output=True, text=True, timeout=60)
             assert result.returncode == 0, result.stderr
             return result.stdout.strip()
