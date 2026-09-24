@@ -308,6 +308,77 @@ def _nixos_build_env() -> dict[str, str] | None:
     return None
 
 
+def _npm_reported_enotempty(result: subprocess.CompletedProcess) -> bool:
+    """True when npm failed because its own ``rmdir`` hit a non-empty directory."""
+    if result.returncode == 0:
+        return False
+    return "ENOTEMPTY" in f"{result.stdout or ''}\n{result.stderr or ''}"
+
+
+def _remove_corrupted_node_modules(cwd: Path) -> None:
+    """Delete a half-written ``node_modules`` so a retry can reify it.
+
+    npm's ``rmdir`` reports ENOTEMPTY on a nested ``.bin`` an interrupted
+    Windows update left non-empty (#75584). ``shutil.rmtree`` unlinks files
+    first — the same recovery as the manual ``rmdir /s /q``. A locked file
+    must not crash the updater; the caller still retries and surfaces npm's
+    own error if the tree cannot be cleared.
+    """
+    node_modules = cwd / "node_modules"
+    try:
+        if node_modules.is_symlink() or node_modules.is_file():
+            node_modules.unlink()
+            return
+        if not node_modules.exists():
+            return
+    except OSError:
+        return
+
+    def _force_writable(func, path, exc) -> None:
+        # onexc passes the exception; onerror (3.11) passes exc_info.
+        if isinstance(exc, tuple):
+            exc = exc[1]
+        if not isinstance(exc, PermissionError):
+            raise exc
+        for target in (path, os.path.dirname(path)):
+            if not target:
+                continue
+            with contextlib.suppress(OSError):
+                os.chmod(target, os.stat(target).st_mode | 0o200)
+        func(path)
+
+    try:
+        try:
+            shutil.rmtree(node_modules, onexc=_force_writable)
+        except TypeError:  # ``onexc`` is 3.12+; 3.11 has ``onerror``
+            shutil.rmtree(node_modules, onerror=_force_writable)
+    except OSError:
+        pass
+    if node_modules.exists() and os.name == "nt":
+        # Walker left the tree (junction or a file Python could not unlink).
+        # cmd /c re-parses the command line, so the path is one quoted argument —
+        # the same rmdir that recovers the install by hand.
+        quoted = str(node_modules).replace('"', "")
+        subprocess.run(
+            ["cmd", "/c", f'rmdir /s /q "{quoted}"'],
+            check=False, capture_output=True,
+        )
+
+
+def _run_clearing_enotempty(
+    run: Callable[[list[str]], subprocess.CompletedProcess],
+    args: list[str],
+    cwd: Path,
+) -> subprocess.CompletedProcess:
+    """Run *args* once; on ENOTEMPTY delete ``node_modules`` and retry once."""
+    result = run(args)
+    if not _npm_reported_enotempty(result):
+        return result
+    _console_print("  ⚠ npm reported ENOTEMPTY; removing node_modules and retrying once")
+    _remove_corrupted_node_modules(cwd)
+    return run(args)
+
+
 def _run_npm_install_deterministic(
     npm: str, cwd: Path, *, extra_args: tuple[str, ...] = (), capture_output: bool = True,
     env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -318,6 +389,10 @@ def _run_npm_install_deterministic(
     is forced: an inherited ``NODE_ENV=production`` / ``omit=dev`` silently skips
     the build toolchain and the build dies with ``tsc: not found``. An npm outside
     ``engines.npm`` fails every command, so it gets one engine-repair retry.
+
+    ``ENOTEMPTY`` (an interrupted update left a non-empty nested ``.bin``) deletes
+    ``cwd/node_modules`` and retries that command once, for ``npm ci`` and for the
+    install fallback. Other failures still fall through without wiping the tree.
 
     ``--no-save`` on the ``npm install`` fallback keeps it true to this function's contract: never mutate
     ``package-lock.json``. Without it, an out-of-sync lockfile gets rewritten by the fallback, which drifts
@@ -333,10 +408,10 @@ def _run_npm_install_deterministic(
                 [npm_exe, *args, "--include=dev", *extra_args], cwd=cwd, env=run_env, capture_output=capture_output,
             )
         if (cwd / "package-lock.json").exists():
-            ci_result = _run(["ci"])
+            ci_result = _run_clearing_enotempty(_run, ["ci"], cwd)
             if ci_result.returncode == 0:
                 return ci_result
-        return _run(["install", "--no-save"])
+        return _run_clearing_enotempty(_run, ["install", "--no-save"], cwd)
 
     result = _attempt(npm)
     if result.returncode == 0:
