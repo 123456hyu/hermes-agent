@@ -469,3 +469,78 @@ class TestHappyEyeballsSocketConnect:
             monkeypatch.setitem(racer.__globals__, "_happy_eyeballs_create_connection", boom)
             with pytest.raises(RuntimeError, match="racer bug"):
                 racer(("127.0.0.1", 1), 1.0)
+
+
+class TestCwdExecutableSearch:
+    """Windows resolves bare program names through the parent's cwd before PATH — the repo
+    the agent works in. The bootstrap flips Microsoft's process-wide switch
+    (``NoDefaultCurrentDirectoryInExePath``) and, on Python < 3.12, gives ``shutil.which``
+    the PATH-only walk that 3.12+ already performs when the switch is set."""
+
+    def test_which_skipping_cwd_never_returns_the_cwd_hit(self, tmp_path, monkeypatch):
+        """PATH-only: ``""``/``.`` entries and the implicit cwd are skipped, real PATH dirs win,
+        duplicates are walked once."""
+        hb = _fresh_import()
+        planted = tmp_path / "repo"
+        real_bin = tmp_path / "bin"
+        for directory in (planted, real_bin):
+            directory.mkdir()
+            exe = directory / "tool.exe"
+            exe.write_bytes(b"")
+            exe.chmod(0o755)
+        monkeypatch.chdir(planted)
+        monkeypatch.setenv("PATHEXT", ".exe")  # lowercase: case-sensitive test hosts
+
+        poisoned = os.pathsep.join(["", os.curdir, str(real_bin), str(real_bin)])
+        assert hb._which_skipping_cwd("tool", path=poisoned) == str(real_bin / "tool.exe")
+        assert hb._which_skipping_cwd("tool", path=os.pathsep.join(["", os.curdir])) is None
+        # An explicit directory is not a search: the stdlib handles it unchanged.
+        assert hb._which_skipping_cwd(str(planted / "tool.exe"), path="") == str(planted / "tool.exe")
+
+    def test_posix_host_untouched(self, monkeypatch):
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        hb = _fresh_import()
+        import shutil
+
+        assert hb.disable_cwd_executable_search() is False
+        assert "NoDefaultCurrentDirectoryInExePath" not in os.environ
+        assert shutil.which is hb._stdlib_which
+
+    @pytest.mark.windows_only
+    def test_planted_cwd_binary_loses_after_bootstrap(self, tmp_path):
+        """Live repro: a zero-byte ``cmd.exe`` planted in the child's cwd. Without the switch
+        CreateProcess picks it (WinError 193) and ``shutil.which`` reports the cwd copy; after
+        ``import hermes_bootstrap`` the real System32 ``cmd`` runs and ``which`` skips the cwd."""
+        (tmp_path / "cmd.exe").write_bytes(b"")
+        root = str(Path(__file__).resolve().parents[1])
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("NoDefaultCurrentDirectoryInExePath", "HERMES_CWD_EXE_SEARCH")}
+        probe = textwrap.dedent("""
+            import os, shutil, subprocess, sys
+            sys.path.insert(0, sys.argv[1])
+            if sys.argv[2] == "hardened":
+                import hermes_bootstrap
+            try:
+                out = subprocess.run(["cmd", "/c", "echo ok"], capture_output=True, text=True, timeout=30).stdout.strip()
+            except OSError as exc:
+                out = f"spawn-failed:{exc.winerror}"
+            which = shutil.which("cmd") or ""
+            print(out, "|", os.path.abspath(which).lower().startswith(os.getcwd().lower()))
+        """).strip()
+
+        def run(mode: str) -> str:
+            result = subprocess.run([sys.executable, "-c", probe, root, mode], cwd=tmp_path, env=env,
+                                    capture_output=True, text=True, timeout=60)
+            assert result.returncode == 0, result.stderr
+            return result.stdout.strip()
+
+        assert run("legacy") == "spawn-failed:193 | True"
+        assert run("hardened") == "ok | False"
+
+    @pytest.mark.windows_only
+    def test_opt_out_restores_legacy_lookup(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CWD_EXE_SEARCH", "1")
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        hb = _fresh_import()
+        assert "NoDefaultCurrentDirectoryInExePath" not in os.environ
+        assert hb.disable_cwd_executable_search() is False
