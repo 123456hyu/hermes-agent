@@ -36,6 +36,8 @@ export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
 // the same `onRequest` registry as a request whose `respond` issues the RPC.
 const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'approval.request': 'approval', 'clarify.request': 'clarify' }
 
+const ATTACH_REQUIRED = new Set(['prompt.submit', 'approval.respond', 'clarify.respond', 'session.interrupt', 'prompt.cancel'])
+
 export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
   private readonly protocol = new CanonicalDesktopProtocol()
@@ -101,12 +103,23 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
   override async connect(wsUrl: string): Promise<void> {
     this.canonical = new URL(wsUrl).searchParams.has('native_dial')
+    this.attached.clear()
 
     return super.connect(wsUrl)
   }
 
+  // Sessions attached over THIS socket. An authority subscription is per
+  // transport: when routing moves a session to another socket (a profile split,
+  // a redial) the new socket must resume before it may submit or respond.
+  private attached = new Set<string>()
+
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, params, timeoutMs, signal) }
+    const sid = typeof params.session_id === 'string' ? params.session_id : null
+
+    if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(sid)) {
+      await this.request('session.resume', { session_id: sid, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
+    }
     const prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
 
@@ -118,6 +131,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
       if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
         // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
         const sid = (settled as { session_id?: string }).session_id
+
+        if (sid) { this.attached.add(sid) }
 
         for (const prompt of ((settled as { prompts?: Array<Record<string, unknown>> }).prompts ?? [])) {
           this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, payload: prompt }, true)

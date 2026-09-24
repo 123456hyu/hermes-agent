@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configureWindowsGatewayTicketClient, createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
+import { configureWindowsGatewayTicketClient, createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
 configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
@@ -8361,7 +8361,9 @@ async function freshGatewayWsUrl(profile, webContentsId) {
       ensure: () => ensureBackend(profile),
       forget: () => forgetLocalGatewayDescriptor(profile),
       use: async current => {
-        const ticket = await mintLocalGatewayTicket(current.gatewayEndpoint)
+        // A shared-primary descriptor answers for a sibling profile too: the socket's
+        // ticket must name THAT profile's home or its sessions are another owner's.
+        const ticket = await mintLocalGatewayTicket(routedGatewayEndpoint(current.gatewayEndpoint, String(profile ?? ''), HERMES_HOME))
 
         return localGatewayDials.prepare(current.baseUrl, ticket, webContentsId)
       }
@@ -15154,7 +15156,7 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
         ensure: () => ensureRegistryBackend(payload?.connectionId, payload?.profile),
         forget: () => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile),
         use: async (current: typeof connection) => {
-          const ticket = await mintLocalGatewayTicket(current.gatewayEndpoint)
+          const ticket = await mintLocalGatewayTicket(routedGatewayEndpoint(current.gatewayEndpoint, String(payload?.profile ?? ''), HERMES_HOME))
 
           return localGatewayDials.prepare(current.baseUrl, ticket, _event.sender.id)
         }

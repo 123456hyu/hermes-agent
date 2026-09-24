@@ -162,8 +162,8 @@ async function privateNode(file: string, kind: 'directory' | 'socket' | 'file') 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
  *  daemon, ticket minted for the sibling profile's home (`profiles/<name>` under the launch root).
  *  The gateway refuses a ticket whose profile it does not serve, so a bad name fails closed. */
-export function routedGatewayEndpoint(endpoint: GatewayEndpoint, url: string, launchHome: string): GatewayEndpoint {
-  const profile = new URL(url).searchParams.get('profile')?.trim()
+export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string): GatewayEndpoint {
+  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? new URL(urlOrProfile).searchParams.get('profile') : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
   const own = path.basename(endpoint.profile_id)
