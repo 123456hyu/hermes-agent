@@ -87,11 +87,10 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> Run:
         Text(ANSWER_2, prompt_tokens=3_000),
     ]
     with GeminiFake(root / "fake", script, route=_summary_route) as fake:
+        # Outcomes are asserted by the tests (a rejected request must name the broken contract).
         first = nh.run_chat(home, "Read big1.txt and big2.txt.", env=fake.child_env())
-        assert first.returncode == 0, first.describe()
         second = nh.run_chat(home, "Now read big3.txt, then echo the marker.", env=fake.child_env(),
                              resume=nh.latest_session(home))
-        assert second.returncode == 0, second.describe()
     return Run(home, fake, [first, second])
 
 
@@ -100,6 +99,7 @@ def test_compaction_happens_on_the_wire(run: Run) -> None:
     # Without compaction the next request = previous request + (functionCall, functionResponse).
     assert len(after.contents) < len(before.contents) + 2, (len(before.contents), len(after.contents))
     assert SUMMARY_MARK in after.all_text(), "compaction summary never reached the next request"
+    assert all(t.returncode == 0 for t in run.turns), [t.describe() for t in run.turns]
     assert ANSWER_2 in run.turns[1].stdout, run.turns[1].describe()
 
 
