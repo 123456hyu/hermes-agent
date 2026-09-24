@@ -510,9 +510,10 @@ class TestCwdExecutableSearch:
     def test_planted_cwd_binary_loses_after_bootstrap(self, tmp_path):
         """Live repro with a PATH program (the ``git``/``rg``/``node`` shape): a real ``probe.exe``
         (a copy of cmd.exe) on PATH and a zero-byte ``probe.exe`` planted in the child's cwd.
-        Legacy: CreateProcess picks the planted copy (WinError 193) and ``shutil.which`` reports
-        it; after ``import hermes_bootstrap`` the PATH copy runs and ``which`` skips the cwd.
-        A system32 name (``cmd``) is no repro: Windows walks the system dirs before the cwd."""
+        Legacy: Python 3.11's ``shutil.which`` hands back the planted copy (callers then spawn
+        that path). Hardened: ``which`` skips the cwd and the bare-name spawn runs the PATH copy.
+        The bare-name ``CreateProcess`` outcome is printed for the record only: the
+        windows-2025 runner resolved it to PATH even without the switch."""
         real_bin = tmp_path / "bin"
         real_bin.mkdir()
         import shutil
@@ -530,22 +531,27 @@ class TestCwdExecutableSearch:
             sys.path.insert(0, sys.argv[1])
             if sys.argv[2] == "hardened":
                 import hermes_bootstrap
-            try:
-                out = subprocess.run(["probe", "/c", "echo ok"], capture_output=True, text=True, timeout=30).stdout.strip()
-            except OSError as exc:
-                out = f"spawn-failed:{exc.winerror}"
+            outs = []
+            for name in ("probe", "probe.exe"):
+                try:
+                    outs.append(subprocess.run([name, "/c", "echo ok"], capture_output=True, text=True, timeout=30).stdout.strip())
+                except OSError as exc:
+                    outs.append(f"spawn-failed:{exc.winerror}")
             which = shutil.which("probe") or ""
-            print(out, "|", os.path.abspath(which).lower().startswith(os.getcwd().lower()))
+            print(*outs, os.path.abspath(which).lower().startswith(os.getcwd().lower()))
         """).strip()
 
-        def run(mode: str) -> str:
+        def run(mode: str) -> list[str]:
             result = subprocess.run([sys.executable, "-c", probe, root, mode], cwd=planted, env=env,
                                     capture_output=True, text=True, timeout=60)
             assert result.returncode == 0, result.stderr
-            return result.stdout.strip()
+            print(mode, result.stdout.strip())
+            return result.stdout.split()
 
-        assert run("legacy") == "spawn-failed:193 | True"
-        assert run("hardened") == "ok | False"
+        legacy = run("legacy")
+        assert legacy[-1] == "True", legacy  # which() resolved the planted cwd copy
+        hardened = run("hardened")
+        assert hardened == ["ok", "ok", "False"], hardened
 
     @pytest.mark.windows_only
     def test_opt_out_restores_legacy_lookup(self, monkeypatch):
