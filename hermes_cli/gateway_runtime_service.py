@@ -110,7 +110,9 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
         result = _run([*command, "show", unit, "--no-pager", "--all",
                        "--property=LoadState,ActiveState,SubState,UnitFileState," + ",".join(SYSTEMD_IDENTITY_PROPERTIES)], deadline)
         props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-        if props.get("LoadState") == "not-found" and not _exists(paths[int(system)]):
+        if not _exists(paths[int(system)]) and (result.returncode or props.get("LoadState") == "not-found"):
+            # Nothing installed in this scope, so a manager we cannot reach there (a headless
+            # runner without a user bus) has no unit that could serve or block this home.
             continue
         if result.returncode or props.get("LoadState") != "loaded":
             raise RuntimeStartError("service_manager_unavailable")
