@@ -33,6 +33,15 @@ import {
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import {
+  INSTALLED_RUNTIME_UNUSABLE,
+  isIgnoreExisting,
+  postBootstrapResolveOptions,
+  shouldProbeActiveRuntime,
+  shouldProbeDiscoveredPath,
+  shouldProbeSystemPython,
+  unresolvedDiscoveredRuntime
+} from './backend-resolution'
+import {
   destroyKeepaliveAgents,
   downloadAgentFor,
   htmlResponseError,
@@ -5283,7 +5292,7 @@ async function createActiveBackend(backendArgs) {
   }
 }
 
-async function resolveHermesBackend(backendArgs) {
+async function resolveHermesBackend(backendArgs, options: { justInstalled?: boolean } = {}) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
@@ -5316,28 +5325,46 @@ async function resolveHermesBackend(backendArgs) {
   //    builds could leave a healthy install behind without the marker. If the
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
-  const activeRuntime = await activeRuntimeState()
+  //    HERMES_DESKTOP_IGNORE_EXISTING=1 skips this rung and the later discovered
+  //    rungs (PATH, system Python) so no local serve starts. The post-bootstrap
+  //    re-resolve passes justInstalled so the runtime this process just
+  //    installed is eligible; without that, the installer would repeat.
+  const ignoreExisting = isIgnoreExisting(process.env.HERMES_DESKTOP_IGNORE_EXISTING)
+  const justInstalled = Boolean(options.justInstalled)
 
-  if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
-    if (!activeRuntime.hasValidMarker) {
-      rememberLog(
-        `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
-      )
+  if (
+    shouldProbeActiveRuntime({
+      ignoreExisting,
+      justInstalled,
+      bootstrapRepairRequested
+    })
+  ) {
+    const activeRuntime = await activeRuntimeState()
+
+    if (activeRuntime.shouldUseActiveRuntime) {
+      if (!activeRuntime.hasValidMarker) {
+        rememberLog(
+          `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
+        )
+      }
+
+      return createActiveBackend(backendArgs)
     }
-
-    return createActiveBackend(backendArgs)
-  }
-
-  if (bootstrapRepairRequested) {
+  } else if (bootstrapRepairRequested) {
     rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
+  } else if (ignoreExisting) {
+    rememberLog(
+      '[bootstrap] HERMES_DESKTOP_IGNORE_EXISTING=1: skipping the active install, hermes on PATH, and the system-python module; no discovered local backend will be started.'
+    )
   }
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
   //    a previous tool-only setup, or pip-installed system-wide. Use it but
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
-  //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
+  //    HERMES_DESKTOP_HERMES is an explicit deployment override, not a
+  //    discovered PATH hit, so it stays available when ignore-existing is set.
+  if (shouldProbeDiscoveredPath({ ignoreExisting }) || process.env.HERMES_DESKTOP_HERMES) {
     let hermesCommand = null
     const hermesOverride = process.env.HERMES_DESKTOP_HERMES
 
@@ -5351,7 +5378,7 @@ async function resolveHermesBackend(backendArgs) {
       } else {
         rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
       }
-    } else {
+    } else if (shouldProbeDiscoveredPath({ ignoreExisting })) {
       hermesCommand = findOnPath('hermes')
     }
 
@@ -5410,8 +5437,9 @@ async function resolveHermesBackend(backendArgs) {
 
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
-  //    take ownership.
-  const python = await findSystemPython()
+  //    take ownership. Skipped under HERMES_DESKTOP_IGNORE_EXISTING=1 like
+  //    every other discovered runtime.
+  const python = shouldProbeSystemPython({ ignoreExisting }) ? await findSystemPython() : null
 
   if (python) {
     // Same smoke-test rationale as step 4: a system Python in the
@@ -5443,13 +5471,26 @@ async function resolveHermesBackend(backendArgs) {
   //    callers see the sentinel and surface it as a user-facing error
   //    explaining what's missing.
   //
-  //    We deliberately do NOT throw here -- throwing inside
-  //    resolveHermesBackend was the old "no payload" path and forced the
-  //    user into a dead end. With the bootstrap protocol, "no install yet"
-  //    is a recoverable state the GUI can drive through.
+  //    We deliberately do NOT throw for "nothing installed yet" -- throwing
+  //    inside resolveHermesBackend was the old "no payload" path and forced the
+  //    user into a dead end. With the bootstrap protocol, that state is
+  //    recoverable: the first-run gate turns the sentinel into connect or
+  //    onboarding. The one throw below is the post-bootstrap re-resolve when
+  //    the runtime just installed is still unusable. Returning the sentinel
+  //    there would start the installer again.
+  if (unresolvedDiscoveredRuntime({ ignoreExisting, justInstalled }) === 'installed-unusable') {
+    const installedError = new Error(INSTALLED_RUNTIME_UNUSABLE) as Error & { isBootstrapFailure?: boolean }
+
+    installedError.isBootstrapFailure = true
+    bootstrapFailure = installedError
+    throw installedError
+  }
+
   return {
     kind: 'bootstrap-needed',
-    label: 'Hermes Agent not installed yet; bootstrap required',
+    label: ignoreExisting
+      ? 'Discovered local runtimes ignored; connect to a gateway or choose install'
+      : 'Hermes Agent not installed yet; bootstrap required',
     command: null,
     args: backendArgs,
     bootstrap: true,
@@ -5580,9 +5621,10 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
 
     rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
 
-    // Re-resolve now that the install exists. The new resolution lands in
-    // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
-    return ensureRuntime(await resolveHermesBackend(backend.args), assertStillOwned)
+    // Re-resolve now that the install exists. justInstalled keeps this pass
+    // from skipping the runtime we just installed; without it, ignore-existing
+    // would return bootstrap-needed and start the installer again.
+    return ensureRuntime(await resolveHermesBackend(backend.args, postBootstrapResolveOptions()), assertStillOwned)
   }
 
   // bootstrap=true with a real backend (createActiveBackend path) means we
