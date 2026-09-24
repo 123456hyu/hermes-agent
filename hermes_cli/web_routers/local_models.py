@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -50,6 +51,10 @@ _LLAMACPP_PROVIDERS = ("llamacpp", "llama.cpp", "llama-cpp")
 _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
 # One TCP stream to a CDN rarely fills a fast line; 8 ranged connections into a preallocated file saturate gigabit.
 _DOWNLOAD_CONNECTIONS = 8
+# A dropped range is retried from the last byte written. The budget is for a flaky link, not a dead one:
+# once it is exhausted the .part and span ledger stay, and the next call fetches only the hole.
+_RANGE_ATTEMPTS = 8
+_RANGE_BACKOFF_S = 1.0
 _CHUNK = 4 << 20
 _SERVER_START_FAILED = "The local server could not start — check the runtime is installed"
 
@@ -329,18 +334,75 @@ def _probe_range_support(url: str) -> int:
     return 0
 
 
+def _staging_paths(dest: Path) -> tuple[Path, Path]:
+    """(partial, span ledger) owned by a resumable ranged download of ``dest``."""
+    part = dest.with_suffix(".part")
+    return part, part.with_name(part.name + ".spans.json")
+
+
+def _merge_spans(spans) -> list:
+    """Merge overlapping or adjacent inclusive ``(start, end)`` spans."""
+    out: list = []
+    for start, end in sorted((int(s), int(e)) for s, e in spans):
+        if out and start <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+def _open_spans(spans, total: int) -> list:
+    """Holes in ``[0, total-1]`` — the only bytes a resume may request."""
+    out: list = []
+    cursor = 0
+    for start, end in _merge_spans(spans):
+        if start > cursor:
+            out.append((cursor, start - 1))
+        cursor = max(cursor, end + 1)
+    if cursor < total:
+        out.append((cursor, total - 1))
+    return out
+
+
+def _split_span_tasks(missing, connections: int) -> list:
+    """Break holes into chunks so a resume does not hand every worker the whole file.
+
+    Callers start at most ``connections`` workers; extra chunks wait on the queue.
+    """
+    missing_bytes = sum(end - start + 1 for start, end in missing)
+    if missing_bytes <= 0:
+        return []
+    target = max(1, missing_bytes // max(1, connections))
+    tasks: list = []
+    for start, end in missing:
+        cursor = start
+        while cursor <= end:
+            tasks.append((cursor, min(end, cursor + target - 1)))
+            cursor += target
+    return tasks
+
+
 def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int = 0, keep_totals: bool = False) -> None:
     """Download url -> dest with byte progress on ``job``; ranged-parallel when the server supports it,
-    single-stream otherwise. Never leaves a .part. Completeness is checked only against what the SERVER
-    declared (range-probe total / Content-Length), never the CATALOG (its sizes may lag a re-upload), so a
-    dropped connection still errors instead of staging a truncated file. Multi-file variants: ``base_done``
-    offsets progress onto earlier files; ``keep_totals=True`` keeps the per-file size from overwriting the
-    variant's total."""
-    tmp = dest.with_suffix(".part")
+    single-stream otherwise. Completeness is checked only against what the SERVER declared (range-probe
+    total / Content-Length), never the CATALOG (its sizes may lag a re-upload), so a dropped connection
+    still errors instead of staging a truncated file. Multi-file variants: ``base_done`` offsets progress
+    onto earlier files; ``keep_totals=True`` keeps the per-file size from overwriting the variant's total.
+
+    Ranged downloads are resumable. A short read (a truncated body is a clean EOF, no exception) is a
+    failed range, retried from the last byte written. When the retry budget is exhausted the preallocated
+    .part and its span ledger stay on disk; the next call fetches only the holes. A single-stream server
+    cannot resume, so that path still removes its partial."""
+    tmp, ledger = _staging_paths(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     file_done = [0]
     progress_lock = threading.Lock()
+    ledger_lock = threading.Lock()
     errors: list[Exception] = []
+    completed: list = []
+    # A ranged partial is retryable. Do not unlink it — the next invocation reads the ledger and
+    # fetches only the holes. Single-stream failures still clean up.
+    keep_partial = tmp.exists() and tmp.stat().st_size > 0
 
     def pump(r, f) -> None:
         for chunk in iter(lambda: r.read(_CHUNK), b""):
@@ -349,34 +411,133 @@ def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int =
                 file_done[0] += len(chunk)
                 job["done_bytes"] = base_done + file_done[0]
 
-    def fetch_range(start: int, end: int) -> None:
+    def save_ledger(total: int) -> None:
+        # Losing the ledger costs a re-download of finished spans, never a corrupt file.
         try:
-            req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
-                f.seek(start)
-                pump(r, f)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
+            payload = json.dumps({
+                "url": url,
+                "total": total,
+                "spans": [[s, e] for s, e in _merge_spans(completed)],
+            })
+            scratch = ledger.with_name(ledger.name + ".tmp")
+            scratch.write_text(payload, encoding="utf-8")
+            scratch.replace(ledger)
+        except OSError as exc:
+            logger.debug("span ledger write skipped: %s", exc)
+
+    def load_ledger(total: int) -> list:
+        try:
+            data = json.loads(ledger.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return []
+        if not isinstance(data, dict) or data.get("url") != url or data.get("total") != total:
+            return []
+        raw = data.get("spans")
+        if not isinstance(raw, list):
+            return []
+        spans = []
+        for item in raw:
+            if (not isinstance(item, (list, tuple)) or len(item) != 2
+                    or not all(isinstance(x, int) and not isinstance(x, bool) for x in item)):
+                return []
+            start, end = int(item[0]), int(item[1])
+            if start < 0 or end < start or end >= total:
+                return []
+            spans.append((start, end))
+        return spans
+
+    def fetch_span(start: int, end: int, total: int) -> None:
+        """Fetch ``[start, end]`` to completion, resuming after a drop from the last byte written."""
+        pos = start
+        attempt = 0
+        last_error: Exception | None = None
+        while pos <= end:
+            attempt += 1
+            try:
+                req = urllib.request.Request(url, headers={"Range": f"bytes={pos}-{end}"})
+                with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
+                    f.seek(pos)
+                    while pos <= end:
+                        chunk = r.read(_CHUNK)
+                        if not chunk:
+                            break
+                        if pos + len(chunk) - 1 > end:
+                            chunk = chunk[:end - pos + 1]
+                        f.write(chunk)
+                        n = len(chunk)
+                        pos += n
+                        with progress_lock:
+                            file_done[0] += n
+                            job["done_bytes"] = base_done + file_done[0]
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+            else:
+                if pos > end:
+                    break
+                last_error = RuntimeError(
+                    f"stream ended at byte {pos - 1}, {end - pos + 1} bytes short")
+            if pos > end:
+                break
+            if attempt >= _RANGE_ATTEMPTS:
+                raise RuntimeError(
+                    f"gave up on bytes {start}-{end} after {_RANGE_ATTEMPTS} attempts "
+                    f"({end - pos + 1} bytes of {total} still missing): {last_error}")
+            time.sleep(min(_RANGE_BACKOFF_S * attempt, 8))
+        with ledger_lock:
+            completed.append((start, end))
+            save_ledger(total)
 
     try:
         # Probe and preallocation take real seconds on a 20+ GB file — narrate them, or the pane shows a dead '— of X GB'.
         job["detail"] = "Connecting"
         total = _probe_range_support(url)
+        if not total and keep_partial:
+            # Falling through to the single-stream branch would open "wb" and wipe the partial.
+            raise RuntimeError(
+                f"cannot confirm range support for a partial download of {dest.name}; "
+                f"the partial is kept and this will resume on a retry")
         if total:
+            keep_partial = True
             if not keep_totals:
                 job["total_bytes"] = total
-            # Preallocate so each worker writes at its own offset.
-            job["detail"] = f"Reserving {_human_gb(total)} of disk space"
-            with open(tmp, "wb") as f:
-                f.truncate(total)
+            # Reopening "wb" would wipe a resumed download. Accept the existing file only at the right size.
+            if tmp.exists() and tmp.stat().st_size == total:
+                completed.extend(load_ledger(total))
+                file_done[0] = sum(end - start + 1 for start, end in _merge_spans(completed))
+                job["done_bytes"] = base_done + file_done[0]
+                if completed:
+                    job["detail"] = f"Resuming at {_human_gb(file_done[0])}"
+            else:
+                completed.clear()
+                job["detail"] = f"Reserving {_human_gb(total)} of disk space"
+                with open(tmp, "wb") as f:
+                    f.truncate(total)
+                save_ledger(total)
             job["detail"] = ""
-            n = _DOWNLOAD_CONNECTIONS
-            threads = [threading.Thread(target=fetch_range, daemon=True, name=f"lm-dl-{i}",
-                                        args=(i * total // n, (i + 1) * total // n - 1)) for i in range(n)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+            missing = _open_spans(completed, total)
+            tasks = _split_span_tasks(missing, _DOWNLOAD_CONNECTIONS)
+            if tasks:
+                pending: queue.Queue = queue.Queue()
+                for task in tasks:
+                    pending.put(task)
+
+                def worker() -> None:
+                    while not errors:
+                        try:
+                            start, end = pending.get_nowait()
+                        except queue.Empty:
+                            return
+                        try:
+                            fetch_span(start, end, total)
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append(exc)
+
+                threads = [threading.Thread(target=worker, daemon=True, name=f"lm-dl-{i}")
+                           for i in range(min(_DOWNLOAD_CONNECTIONS, len(tasks)))]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
             if errors:
                 raise errors[0]
             if file_done[0] != total:
@@ -394,10 +555,17 @@ def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int =
                                    f"said {length:,} — connection dropped? Removed; try again")
         job["detail"] = "Finishing"
         binaries.replace_when_released(tmp, dest)
-    except Exception:
-        # Best effort: a leftover that cannot be removed must not hide the error that left it.
         with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
+            ledger.unlink(missing_ok=True)
+    except Exception:
+        if keep_partial:
+            logger.info("download of %s interrupted; %s and span ledger kept for resume",
+                        dest.name, tmp.name)
+        else:
+            # Best effort: a leftover that cannot be removed must not hide the error that left it.
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+                ledger.unlink(missing_ok=True)
         raise
 
 
