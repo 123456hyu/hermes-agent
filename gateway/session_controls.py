@@ -1,5 +1,6 @@
 """Authenticated WS projection of the gateway authority; no TUI execution fallback."""
 from dataclasses import asdict
+from pathlib import Path
 import sqlite3
 import uuid
 
@@ -33,7 +34,26 @@ class AuthorityConnection:
         bind_native_transport(authority, self.actor, identity)
         self.native_owner = identity.get('native_bootstrap') is True
         self.subscriptions = {}
+        self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
+
+    def _sibling_for(self, profile):
+        """Connection bound to the sibling authority a ``profile`` param names, or None for our own
+        home. One native socket serves every profile this process multiplexes (the Desktop's
+        shared-primary route); a profile nobody here serves is a mismatch, never a fallback."""
+        from hermes_cli.profiles import profile_matches_home
+        if profile_matches_home(profile, Path(self.authority.profile_id)):
+            return None
+        registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
+        for sibling in (registry or ()):
+            if sibling is not self.authority and profile_matches_home(profile, Path(sibling.profile_id)):
+                connection = self._siblings.get(sibling.profile_id)
+                if connection is None:
+                    identity = dict(self._identity, profile_id=sibling.profile_id, instance_id=sibling.instance_id)
+                    connection = AuthorityConnection(sibling, self.transport, identity, operator=self._operator)
+                    self._siblings[sibling.profile_id] = connection
+                return connection
+        raise RuntimeStoreError('profile_mismatch')
 
     async def dispatch(self, request):
         rid = request.get('id')
@@ -43,6 +63,19 @@ class AuthorityConnection:
             # Every handler indexes params as a mapping; refuse the frame before ``.get``.
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
+        profile = params.get('profile')
+        if isinstance(profile, str) and profile:
+            try:
+                routed = self._sibling_for(profile)
+            except RuntimeStoreError as exc:
+                return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+            if routed is not None:
+                return await routed.dispatch(request)
+            # Our own home: the scope is implicit for session verbs; group verbs validate it themselves.
+            from gateway.session_group_controls import GROUP_METHODS
+            if method not in GROUP_METHODS and method != 'profiles.list':
+                params = {key: value for key, value in params.items() if key != 'profile'}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
@@ -180,11 +213,20 @@ class AuthorityConnection:
         # ``-c <title> --create-if-missing``: resolve-or-create is one owner step (no await
         # between lookup and creation), so concurrent programmatic callers converge.
         title = validate_title(params.pop('title')) if 'title' in params else None
+        # Bot Mode's forever-chat mint: born hidden from the sidebar; `follow_profile_config` is
+        # the canonical default (a local session's runtime is built from the profile's current
+        # config on every attach), so the flag is accepted for the legacy contract and implied.
+        hidden = params.pop('hidden', False)
+        params.pop('follow_profile_config', None)
+        if type(hidden) is not bool:
+            raise RuntimeStoreError('invalid_params')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
             ref = create_local_session(self.authority, self.actor, params)
             if title:
                 title_new_session(self.authority, ref, title)
+            if hidden:
+                self.authority.db.set_session_hidden(ref.session_id, True)
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):
@@ -214,8 +256,26 @@ class AuthorityConnection:
         if 'session:read' not in self.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         limit = params.get('limit', 200)
-        if set(params) - {'limit'} or type(limit) is not int or not 1 <= limit <= 200:
+        if set(params) - {'limit', 'title', 'include_hidden'} or type(limit) is not int or not 1 <= limit <= 200:
             raise RuntimeStoreError('invalid_params')
+        if 'title' in params:
+            # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
+            # resolver `session.resume title=` uses, so a hidden canonical chat answers here
+            # instead of being re-minted. Never confirms another principal's titles.
+            from gateway.session_local_title import resolve_titled_session
+            found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
+            if found is None:
+                return {'sessions': [], 'scope': 'stored'}
+            row = self.authority.db.get_session(found.session_id) or {}
+            root = self.authority.db.get_session(
+                self.authority.db.resolve_session_by_title(params['title']) or found.session_id) or row
+            return {'sessions': [{'session_id': found.session_id, 'id': root.get('id') or found.session_id,
+                                  'resolved_id': found.session_id, 'title': row.get('title') or '',
+                                  'root_title': root.get('title') or '', 'source': row.get('source'),
+                                  'started_at': row.get('started_at'),
+                                  'message_count': row.get('message_count', 0),
+                                  'running': found.session_id in self.authority.sessions}],
+                    'scope': 'stored'}
         sessions = []
         for sid in tuple(self.authority.sessions):
             candidate = SessionRef(self.actor.profile_id, sid)
@@ -350,6 +410,9 @@ class AuthorityConnection:
             params["prompt_id"], {"answer": params["answer"]}, kind="clarify")
 
     async def close(self):
+        for sibling in self._siblings.values():
+            await sibling.close()
+        self._siblings.clear()
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
         for session_id, subscription in list(self.subscriptions.items()):
