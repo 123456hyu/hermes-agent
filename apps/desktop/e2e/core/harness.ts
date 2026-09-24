@@ -256,8 +256,11 @@ export function sandboxProcesses(sandbox: CoreSandbox): ProcInfo[] {
  * dead backend is reparented away and still counted.
  */
 export function backendProcesses(sandbox: CoreSandbox): ProcInfo[] {
+  // The local backend is the gateway `hermes gateway ensure` attached to or started
+  // (`hermes_cli.main [--profile X] gateway run --quiet`); `serve` covers a pool backend.
   const serve = sandboxProcesses(sandbox).filter(
-    proc => / serve( |$)/.test(proc.cmdline) && !/electron/i.test(proc.cmdline.split(' ')[0])
+    proc => (/ serve( |$)/.test(proc.cmdline) || / gateway run( |$)/.test(proc.cmdline))
+      && !/electron/i.test(proc.cmdline.split(' ')[0])
   )
 
   const pids = new Set(serve.map(proc => proc.pid))

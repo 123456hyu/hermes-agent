@@ -16022,7 +16022,7 @@ async function handleHermesApiRequest(request) {
   let connection
 
   try {
-    const connection = await ensureBackend(routeProfile, {
+    connection = await ensureBackend(routeProfile, {
       passive: request?.passive,
       request: { method: request?.method, path: request?.path }
     })

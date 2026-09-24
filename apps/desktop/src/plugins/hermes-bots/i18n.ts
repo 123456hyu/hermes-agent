@@ -2162,7 +2162,10 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   zh,
   'zh-hant': zhHant,
   ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
-  ru: { canonical: CANONICAL_GROUP_LOCALES.ru }
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
+  fr: { canonical: CANONICAL_GROUP_LOCALES.fr },
+  de: { canonical: CANONICAL_GROUP_LOCALES.de },
+  es: { canonical: CANONICAL_GROUP_LOCALES.es }
 }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
