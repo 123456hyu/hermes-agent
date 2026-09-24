@@ -2726,6 +2726,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self._stream_stale_timeout = None
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
+        self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
@@ -3585,6 +3586,21 @@ class _StreamingCall(StreamingWaitMonitor):
         except Exception:
             logger.debug("Stale stream socket shutdown failed", exc_info=True)
 
+    def _uncounted_stale_attempt(self) -> int:
+        """The started attempt the circuit breaker (see ``_stale_streak()``) has not counted
+        yet, else 0. Like the non-streaming and inline watchdogs, each attempt counts once:
+        the stale timer re-fires every window while the worker has not dispatched yet or is
+        still unwinding a kill, and none of those re-kills is another unresponsive attempt."""
+        with self.stream_attempt_lock:
+            attempt = int(self.stream_attempt_state["current"])
+        return 0 if attempt in self._stale_counted_attempts else attempt
+
+    def _count_stale_attempt(self) -> None:
+        attempt = self._uncounted_stale_attempt()
+        if attempt:
+            self._stale_counted_attempts.add(attempt)
+            _bump_stale_streak(self.agent)
+
     def _kill_stale_stream(self, elapsed: float) -> None:
         """SSE pings but no chunks: cancel the attempt and abort the request-local
         client so the retry loop opens a fresh one. The shared client is never
@@ -3607,7 +3623,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
-        _bump_stale_streak(self.agent)  # circuit breaker, see ``_stale_streak()``
+        self._count_stale_attempt()
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
@@ -3616,9 +3632,11 @@ class _StreamingCall(StreamingWaitMonitor):
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
         socket, wait for the worker, flag the interrupt."""
-        # The stale branch already counted this iteration if its deadline won the race.
-        if stale_elapsed <= self._stream_stale_timeout:
-            _record_interrupted_provider_wait(self.agent, stale_elapsed, response_started=self.deltas_were_sent["yes"])
+        # Once per attempt: a stale kill that already counted this attempt wins.
+        attempt = self._uncounted_stale_attempt()
+        if attempt and stale_elapsed <= self._stream_stale_timeout and _record_interrupted_provider_wait(
+                self.agent, stale_elapsed, response_started=self.deltas_were_sent["yes"]):
+            self._stale_counted_attempts.add(attempt)
         # Mark cancelled BEFORE force-closing so the worker treats the forced
         # transport error as a cancel, not a network error (#6600).
         self._request_cancelled["value"] = True
