@@ -131,6 +131,21 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
+# Whole-device wipes that are neither dd nor a redirect: each erases the partition table or the raw
+# sectors of the device it is pointed at. Every branch needs BOTH its destructive flag and a raw block
+# device operand on the same command, so `wipefs /dev/sda` (prints signatures), `sgdisk -p /dev/sda`
+# (prints the table), `blkdiscard --help` and `shred secret.txt` still run. ``-n``/``--no-act`` is
+# wipefs doing everything except the write, so it is a diagnostic and must stay runnable; the
+# destructive-flag lookahead alone matched the ``a`` in ``-na`` and matched ``--all`` beside ``--no-act``.
+# One definition for both tiers (#102371): the hardline floor and its approval-tier twin must agree on
+# what counts as a wipe, or a print-only run prompts in one tier and passes the other.
+_RAW_DEVICE_WIPE = (
+    _CMDPOS_EXEC + r'(?:wipefs\b(?![^;|&\n]*\s(?:-[a-z]*n[a-z]*|--no-act)\b)(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
+    r'|sgdisk\b(?=[^;|&\n]*\s(?:-z|--zap-all|-o|--clear)\b)'
+    r'|blkdiscard\b|shred\b)'
+    rf'(?=[^;|&\n#]*{_BLOCK_DEVICE_PATH})'
+)
+
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
     # "/.", "/./", "/../..", optional trailing glob). Each inter-slash segment must be exactly "."
@@ -150,17 +165,7 @@ HARDLINE_PATTERNS = [
      rf'|(?:mkswap|newfs(?:_[a-z0-9]+)?)\b[^;|&\n#]*{_BLOCK_DEVICE_PATH}'
      r'|diskutil\s+(?:[a-z]+\s+)?(?:erase(?:disk|volume)|zerodisk|randomdisk|secureerase|reformat|partitiondisk)\b)',
      "format filesystem (mkfs)"),
-    # Whole-device wipes that are neither dd nor a redirect: each erases the partition table or the
-    # raw sectors of the device it is pointed at. Every branch needs BOTH its destructive flag and a
-    # raw block device operand on the same command, so `wipefs /dev/sda` (prints signatures),
-    # `sgdisk -p /dev/sda` (prints the table), `blkdiscard --help` and `shred secret.txt` still run.
-    # ``-n``/``--no-act`` is wipefs doing everything except the write, so it is a diagnostic
-    # and must stay runnable; the destructive-flag lookahead alone matched the ``a`` in
-    # ``-na`` and matched ``--all`` beside ``--no-act``.
-    (_CMDPOS_EXEC + r'(?:wipefs\b(?![^;|&\n]*\s(?:-[a-z]*n[a-z]*|--no-act)\b)(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
-     r'|sgdisk\b(?=[^;|&\n]*\s(?:-z|--zap-all|-o|--clear)\b)'
-     r'|blkdiscard\b|shred\b)'
-     rf'(?=[^;|&\n#]*{_BLOCK_DEVICE_PATH})', "wipe raw block device"),
+    (_RAW_DEVICE_WIPE, "wipe raw block device"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
@@ -372,7 +377,7 @@ DANGEROUS_PATTERNS = [
     # Positional-operand twins of the hardline wipe rule (#102371): kept in
     # the approval tier so the tools are gated even where only
     # detect_dangerous_command is consulted; regular-file targets stay clean.
-    (_CMDPOS + rf'(?:shred|wipefs|blkdiscard|sgdisk)\b[^\n]*\s["\']?{_BLOCK_DEVICE_PATH}', "raw block device wipe (shred/wipefs/blkdiscard/sgdisk)"),
+    (_RAW_DEVICE_WIPE, "raw block device wipe (shred/wipefs/blkdiscard/sgdisk)"),
     (rf'>\s*{_BLOCK_DEVICE_PATH}', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
