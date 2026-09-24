@@ -157,16 +157,15 @@ describe('useComposerSubmit external request routing', () => {
     vi.restoreAllMocks()
   })
 
-  it.each(['interrupt', 'steer'] as const)('restores a rejected %s draft without queue admission', async mode => {
+  it.each(['interrupt', 'steer'] as const)('keeps a rejected %s draft in the local queue without submit admission', async mode => {
     const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
     h.onSteer.mockRejectedValue(new Error('correction unsupported'))
     act(() => h.hook.result.current.submitDraft())
-    await waitFor(() => expect(h.loadIntoComposer).toHaveBeenCalledWith('keep guidance', []))
-    expect(h.stashAt).toHaveBeenCalledWith('stored-session', 'keep guidance', [])
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['keep guidance']))
     expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
     expect(h.onSubmit).not.toHaveBeenCalled()
     expect(h.queueCurrentDraft).not.toHaveBeenCalled()
-    expect(getQueuedPrompts('stored-session')).toEqual([])
+    clearQueuedPrompts('stored-session')
   })
 
   it('routes a refused native steer through canonical queue admission', async () => {
