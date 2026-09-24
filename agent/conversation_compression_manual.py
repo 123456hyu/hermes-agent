@@ -8,8 +8,11 @@ here so ``--preview`` / ``--aggressive`` and the lock-skip wording cannot drift 
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 #: Every surface renders the same refusal; hard truncation has no persistence path outside the guarded
 #: ``_compress_context`` rotation, so ``--aggressive`` is refused rather than mis-parsed as a focus topic.
@@ -66,12 +69,90 @@ def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> i
         tools=getattr(agent, "tools", None) or None)
 
 
+def durable_row_id(message: Any) -> Optional[int]:
+    """Durable SQLite row id a flush or compaction stamped onto a live dict (``_row_id``, else ``row_id``), or
+    None when the dict was never synced with state.db (gateway replay dicts, this turn's unflushed rows)."""
+    if not isinstance(message, dict):
+        return None
+    raw = message.get("_row_id")
+    if raw is None:
+        raw = message.get("row_id")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def adopt_foreign_durable_rows(
+    db: Any, session_id: str, history: Sequence[Dict[str, Any]], *, ceiling: Optional[int] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Fold the active rows another surface appended to ``session_id`` since ``history`` was last synced with
+    state.db, and return the merged history — or None when there is nothing to adopt.
+
+    A surface compacts the history it holds, but an in-place commit archives every durable row under the lease
+    watermark (``MAX(id)`` of the active rows): a row the surface never held would be archived without the
+    summarizer seeing it and flagged a superseded duplicate, gone from every surface (#120155). So every path
+    that hands a held history to ``compress_now`` must first reconcile it with the durable rows, the way the
+    turn start does (#42962). The boundary is the highest ``_row_id`` the surface's own flushes (or a local
+    compaction) stamped onto its dicts; active rows above it — and below ``ceiling``, this turn's own
+    already-persisted user row when there is one — are foreign and are appended, canonicalized for replay.
+    When one of them is a compaction summary another surface rewrote the transcript under us, so the history is
+    stale from the root and is re-hydrated from the DB instead. Nothing stamped yet (a seeded branch before its
+    first turn, gateway replay dicts) means nothing can be told apart, and None is returned; so is a DB the
+    caller cannot read, which keeps the held history as is.
+    """
+    from agent.replay_cleanup import canonicalize_replay_history
+
+    seen = max((rid for m in history if (rid := durable_row_id(m)) is not None), default=None)
+    if seen is None or db is None or not session_id:
+        return None
+
+    def _below_ceiling(rid) -> bool:
+        return isinstance(rid, int) and (ceiling is None or rid < ceiling)
+
+    def _foreign(rid) -> bool:
+        return _below_ceiling(rid) and rid > seen
+    # Keyset probe first: the common case has nothing to adopt and must not pay a full transcript decode.
+    try:
+        newer = [row for row in db.get_messages(session_id, after_id=seen) if _foreign(row.get("id"))]
+        if not newer:
+            return None
+        rewritten = any(row.get("_compressed_summary") for row in newer)
+        rows = db.get_messages_as_conversation(session_id, repair_alternation=rewritten, include_row_ids=True)
+    except Exception:
+        logger.debug("durable history probe failed for session %s; keeping the held history", session_id,
+                     exc_info=True)
+        return None
+    if not isinstance(rows, list):
+        return None
+    keep = _below_ceiling if rewritten else _foreign
+    tail = canonicalize_replay_history([m for m in rows if keep(durable_row_id(m))])
+    if not tail:
+        return None
+    return tail if rewritten else [*history, *tail]
+
+
+def _reconcile_with_durable_rows(agent: Any, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """``history`` plus whatever another surface appended to the agent's session since it was held (see
+    ``adopt_foreign_durable_rows``); the input when the agent has no session store or nothing is foreign."""
+    merged = adopt_foreign_durable_rows(
+        getattr(agent, "_session_db", None), getattr(agent, "session_id", None) or "", history)
+    return history if merged is None else merged
+
+
 def compress_now(
     agent: Any, history: Sequence[Dict[str, Any]], request: CompressRequest, *,
     system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
 ) -> CompressResult:
     """Run one manual compression of ``history`` on ``agent`` and return the outcome; the caller installs
     ``after_messages`` (and re-anchors session ids) — history is never mutated here.
+
+    ``history`` is first reconciled with the session's durable rows (``adopt_foreign_durable_rows``): the
+    in-place commit archives every active row in state.db, so turns another surface appended since the caller
+    last synced must be in the compaction input, not archived unseen (#120155). ``before_messages`` is that
+    reconciled list, and ``after_messages`` carries the adopted turns.
 
     ``preview=True`` performs no compression and leaves ``agent`` untouched. A held compression lock
     yields ``lock_skipped`` with the agent's signal cleared and the deferred context-engine notification
@@ -89,7 +170,7 @@ def compress_now(
     from hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
 
-    before = list(history)
+    before = _reconcile_with_durable_rows(agent, list(history))
     before_tokens = estimate_request_tokens(agent, before)
     head, tail = before, []
     if request.partial:
