@@ -73,7 +73,7 @@ def _scenario_tools(root: Path) -> dict[str, Any]:
     """Parallel toolUse (read_file + terminal) -> toolResults, a second tool round, then the answer."""
     def first(_rec: dict[str, Any]) -> Turn:
         return Turn([Reasoning(R_A1), ToolUse("read_file", {"path": str(root / "project" / "seed.txt")}),
-                     ToolUse("terminal", {"command": "echo MARK-$((6*7))"})])
+                     ToolUse("terminal", {"command": "seq 42 42 | sed s/^/MARK-/"})])
 
     fake = FakeBedrock(seq(first, lambda _r: Turn([Reasoning(R_A2), ToolUse(
         "read_file", {"path": str(root / "project" / "seed2.txt")})]), Turn([Reasoning(R_A3), Text(FINAL_A)])))
