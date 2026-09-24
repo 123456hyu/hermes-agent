@@ -9,6 +9,13 @@ from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, Sess
 from hermes_state_runtime import RuntimeStoreError
 
 
+# Verbs whose param sets are closed and never carried a ``profile`` key.
+_PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
+                               'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
+                               'session.interrupt', 'session.events.since', 'session.mutate',
+                               'approval.respond', 'clarify.respond'})
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -72,9 +79,9 @@ class AuthorityConnection:
                     'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
             if routed is not None:
                 return await routed.dispatch(request)
-            # Our own home: the scope is implicit for session verbs; group verbs validate it themselves.
-            from gateway.session_group_controls import GROUP_METHODS
-            if method not in GROUP_METHODS and method != 'profiles.list':
+            # Our own home: the scope is implicit for the strict session verbs, which refuse
+            # unknown keys; every other handler validates ``profile`` itself.
+            if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
