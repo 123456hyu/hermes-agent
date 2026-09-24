@@ -40,7 +40,7 @@ from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
     StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error,
-    is_malformed_schema_error,
+    is_malformed_schema_error, is_sqlite_lock_error,
 )
 from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
@@ -513,16 +513,18 @@ class SessionDB(
     def _delete_unreferenced_system_prompts(conn) -> None:
         conn.execute(
             "DELETE FROM system_prompts WHERE NOT EXISTS ("
-            "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash)"
+            "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) AND NOT EXISTS ("
+            "SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)"
         )
 
     @staticmethod
     def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
         data = dict(row)
-        if "_system_prompt_resolved" in data:
-            resolved = data.pop("_system_prompt_resolved")
-            if "system_prompt" in data:
-                data["system_prompt"] = resolved
+        for column in ("system_prompt", "tool_names"):
+            if f"_{column}_resolved" in data:
+                resolved = data.pop(f"_{column}_resolved")
+                if column in data:
+                    data[column] = resolved
         return data
 
     @staticmethod
@@ -711,6 +713,8 @@ class SessionDB(
                 # SQLITE_IOERR to a mode=ro reader (it can't do the -shm recovery the read
                 # needs). Closes in milliseconds: retry a bounded number of times before
                 # classifying the store as failed (#100436; see _READ_ONLY_IOERR_RETRY_ATTEMPTS).
+                # A lock is NOT retried here: the connection already waited _READ_BUSY_TIMEOUT_S,
+                # and a retry would multiply that wait on blocking callers (TUI, `hermes status`).
                 transient = _DISK_IO_ERROR_MARKER in str(ioerr).lower()
                 if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or not transient:
                     raise
@@ -801,8 +805,7 @@ class SessionDB(
                 self._connect_and_init()
                 return
             except sqlite3.OperationalError as exc:
-                err = str(exc).lower()
-                if "locked" not in err and "busy" not in err:
+                if not is_sqlite_lock_error(exc):
                     raise
                 self._close_connection_quietly(self._conn)
                 now = time.monotonic()
@@ -976,14 +979,7 @@ class SessionDB(
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
         while True:
-            self._raise_if_db_corrupt()
-            if storage_state(self.db_path) == STORAGE_CORRUPT:
-                # Another handle in this process already saw structural damage on this file.
-                # Quarantine this one before it touches SQLite; the error type is the same
-                # StateDbCorruptError, so every transcript-diversion owner handles it unchanged.
-                self._halt_db_corrupt(sqlite3.DatabaseError(
-                    "database disk image is malformed (reported earlier in this process: "
-                    f"{storage_corrupt_reason(self.db_path)})"))
+            self._raise_if_db_corrupt(storage=True)
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
             # not here. close() mutates _conn and _db_sidecar_identity under that
             # same lock, ending the WAL generation (SQLite unlinks the -wal/-shm
@@ -1041,7 +1037,7 @@ class SessionDB(
                     continue
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
-                    if "locked" in err_msg or "busy" in err_msg:
+                    if is_sqlite_lock_error(exc):
                         if self._sleep_before_write_retry(deadline, patience_s):
                             continue
                         # Say what actually happened, not disk/permission damage. The holder goes to
@@ -1075,7 +1071,7 @@ class SessionDB(
                             self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
-                    if self._enter_fts_fail_open(exc):
+                    if self._enter_fts_fail_open(exc, deadline=deadline, patience_s=patience_s):
                         continue
                     # What survives both checks is structural damage: quarantine.
                     if self._is_structural_corruption_error(exc):
@@ -1394,9 +1390,16 @@ class SessionDB(
             )
         return retire_without_close
 
-    def _raise_if_db_corrupt(self) -> None:
+    def _raise_if_db_corrupt(self, *, storage: bool = False) -> None:
         if self._db_corrupt:
             raise self._corrupt_error()
+        if storage and storage_state(self.db_path) == STORAGE_CORRUPT:
+            # Another handle in this process already saw structural damage on this file.
+            # Quarantine this one before it touches SQLite; the error type is the same
+            # StateDbCorruptError, so every transcript-diversion owner handles it unchanged.
+            self._halt_db_corrupt(sqlite3.DatabaseError(
+                "database disk image is malformed (reported earlier in this process: "
+                f"{storage_corrupt_reason(self.db_path)})"))
 
     def _sleep_before_write_retry(self, deadline: float, patience_s: float) -> bool:
         """Sleep one jitter interval if the budget allows; True = retry, False = deadline passed. Small

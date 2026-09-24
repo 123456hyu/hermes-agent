@@ -346,7 +346,7 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
-    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner):
+    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):
             step()
     with _sessions_lock:
@@ -792,8 +792,10 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
                                            request_id=request_id or None)
 
     settle = server_requests.send_async("approval", sid, payload, on_result)
-    if request_id:
-        _approval.register_gateway_settle(session_key, request_id, settle)
+    # The wait can end between the frame going out and the hook attaching (the client answered by RPC, another
+    # surface resolved it): withdraw now, or the request stays in ``open_requests`` for every later resume.
+    if request_id and not _approval.register_gateway_settle(session_key, request_id, settle):
+        settle("resolved")
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -925,18 +927,20 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
-    with contextlib.suppress(Exception):
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_read_errors import FailedConfigRead
+    try:
         p = _active_config_path()
         sig = file_signature(p.stat()) if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        from hermes_cli.config import read_user_config_raw
         data = read_user_config_raw(p) if p.exists() else {}
-        with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
-            _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
-        return data
-    return {}
+    except Exception as exc:
+        return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
+    with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
+        _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
+    return data
 
 
 def _load_cfg() -> dict:
@@ -1372,7 +1376,7 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     agent = session.get("agent")
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
-             or getattr(agent, "model", "") or override.get("model") or _resolve_model())
+             or getattr(agent, "model", "") or override.get("model") or _session_default_model(session))
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
                 or getattr(agent, "provider", "") or override.get("provider") or "")
     return str(model), str(provider or "")

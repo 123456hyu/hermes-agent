@@ -12,7 +12,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
-from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -253,7 +253,7 @@ class GatewayTurnPersistenceMixin:
         if await self.async_session_store.transcript_tail_role(session_id) != "user":
             return
         await self.async_session_store.append_to_transcript(session_id, {
-            "role": "assistant", "content": notice, "timestamp": time.time(),
+            "role": "assistant", "content": notice, "timestamp": time.time(), "display_kind": FAILED_TURN_DISPLAY_KIND,
         })
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
