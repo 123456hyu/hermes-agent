@@ -685,6 +685,22 @@ function Write-BrowserEnv {
     Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
 }
 
+function Repair-AgentBrowserArm64Stub {
+    param([string]$BinDir)
+    if ((Get-WindowsArch) -ne 'arm64') { return }
+    if ([string]::IsNullOrWhiteSpace($BinDir) -or -not (Test-Path -LiteralPath $BinDir)) { return }
+    $x64 = Join-Path $BinDir 'agent-browser-win32-x64.exe'
+    $arm64 = Join-Path $BinDir 'agent-browser-win32-arm64.exe'
+    if (-not (Test-Path -LiteralPath $x64)) { return }
+    if ((Get-Item -LiteralPath $x64).Length -lt 1024) { return }
+    $arm64Len = 0
+    if (Test-Path -LiteralPath $arm64) { $arm64Len = (Get-Item -LiteralPath $arm64).Length }
+    if ($arm64Len -lt 1024) {
+        Copy-Item -LiteralPath $x64 -Destination $arm64 -Force
+        Write-Info "Healed empty agent-browser win32-arm64 stub from the published x64 image"
+    }
+}
+
 function Install-AgentBrowser {
     $npm = Resolve-NpmCmd
     if (-not $npm) {
@@ -728,6 +744,11 @@ function Install-AgentBrowser {
         Write-BrowserEnv -BrowserPath $sysBrowser
         Write-Info "Explicit browser override set -- Chromium download will be skipped when agent-browser installs on demand"
     }
+    # Empty win32-arm64 stubs make the JS wrapper spawn EFTYPE. Heal any
+    # package already under the managed prefix; resolution prefers a native
+    # ARM64 PE and otherwise invokes the published x64 exe directly.
+    Repair-AgentBrowserArm64Stub (Join-Path $prefixDir "node_modules\agent-browser\bin")
+    Repair-AgentBrowserArm64Stub (Join-Path $HermesHome "node_modules\agent-browser\bin")
     Write-Success "Agent-browser ready"
 }
 

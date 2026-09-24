@@ -275,15 +275,27 @@ def _check_agent_browser(should_fix: bool) -> bool:
 
     Mirrors ``tools.browser_tool_install._find_agent_browser``'s own cascade (lazy npx or a global/Hermes-managed
     install) so doctor can't diverge from the tools; validate=False keeps it a cheap, side-effect-free check.
+    On Windows ARM64 the npx wrapper is not healthy: it spawns a win32-x64 stub and fails with EFTYPE, so the
+    probe requires a resolved native binary that ``agent_browser_runnable`` can actually run.
     """
+    windows_arm64 = False
     try:
         # agent-browser is no longer a root package.json dependency (#43564) — it resolves lazily via npx
         # (or a global/Hermes-managed install) at first use.
-        from tools.browser_tool_install import _find_agent_browser, _is_npx_agent_browser_sentinel
+        from tools.browser_tool_install import (
+            _find_agent_browser, _is_npx_agent_browser_sentinel, _is_windows_arm64,
+        )
+        windows_arm64 = _is_windows_arm64()
         resolved = _find_agent_browser(validate=False)
     except Exception:
         resolved = None
     if resolved and _is_npx_agent_browser_sentinel(resolved):
+        if windows_arm64:
+            check_warn(
+                "agent-browser npx wrapper is not runnable on Windows ARM64",
+                "(spawn EFTYPE on the win32-x64 stub; need a native agent-browser-win32-arm64.exe)",
+            )
+            return False
         check_ok("agent-browser", "(resolves via npx on first use)")
         if should_fix:
             # Can't tell whether npx's cache is warm — fire the same warm-up `hermes update` does.
