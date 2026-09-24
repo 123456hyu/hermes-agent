@@ -238,12 +238,15 @@ terminal` forces the sandbox and errors when it cannot host one.
 ### The sandbox image
 
 The sandbox needs the desktop stack. `nousresearch/hermes-sandbox:desktop` is
-the default sandbox base (`nikolaik/python-nodejs:python3.11-nodejs20`, the
-image every Docker/Modal/Daytona config already defaults to) plus TigerVNC,
-the Xfce components, a headed Chromium, `agent-browser`, `cua-driver` and the
-everyday tools the base lacked (jq, ripgrep, fd, tmux, rsync, sudo for the
-image's `pn` user). Its default user is still root, so switching the image
-changes nothing for shell workflows:
+the default image for every container backend (Docker, Modal, Daytona,
+Singularity): the `nikolaik/python-nodejs` base (Python 3.13 / Node 26) plus
+TigerVNC, the Xfce components, a headed Chromium, `agent-browser`, `cua-driver`
+and the everyday tools that base lacked (jq, ripgrep, fd, tmux, rsync, sudo for
+the image's `pn` user). Its default user is root, like the old default, so
+shell workflows do not change. Configs that still held the previous default
+(`nikolaik/python-nodejs:python3.11-nodejs20`) are moved to it on upgrade; an
+image you pinned yourself is left alone, and the screen then tells you it needs
+this image or `bot_desktop.placement: gateway`:
 
 ```yaml
 terminal:
