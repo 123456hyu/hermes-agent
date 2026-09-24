@@ -147,7 +147,7 @@ describe('ModelMenuPanel current selection', () => {
     const { content } = renderPanel()
 
     const currentRow = (await content.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')
-    const staleRow = content.getByText('Deepseek Chat').closest('[role="menuitem"]')
+    const staleRow = content.getByText('DeepSeek Chat').closest('[role="menuitem"]')
 
     expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
     expect(staleRow?.querySelector('.codicon-check')).toBeNull()
@@ -310,11 +310,11 @@ describe('ModelMenuPanel provider collapse', () => {
     const header = await content.findByText('DeepSeek')
     // Collapse
     fireEvent.click(header)
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
     // Expand
     fireEvent.click(header)
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+      expect(content.queryByText('DeepSeek V4 Pro')).not.toBeNull()
     })
   })
 
@@ -329,7 +329,7 @@ describe('ModelMenuPanel provider collapse', () => {
     // The current provider is collapsible like any other — clicking its header
     // hides its models rather than forcing them to stay open.
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+      expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
     })
   })
 
@@ -338,7 +338,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const header = await content.findByText('DeepSeek')
     fireEvent.click(header)
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
 
     // Type in the search bar (auto-focused by DropdownMenuSearch)
     const input = screen.getByRole('textbox', { name: 'Search models' })
@@ -351,7 +351,7 @@ describe('ModelMenuPanel provider collapse', () => {
     await vi.waitFor(() => {
       expect(
         content.queryByText(
-          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('Deepseek V4 Pro')
+          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('DeepSeek V4 Pro')
         )
       ).not.toBeNull()
     })
@@ -364,7 +364,7 @@ describe('ModelMenuPanel provider collapse', () => {
     // Radix DropdownMenuItem fires onSelect on Enter from the onKeyDown handler
     fireEvent.keyDown(header.closest('[role="menuitem"]') ?? header, { key: 'Enter' })
 
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
   })
 
   // The collapsed-providers set is a global presentation preference
@@ -437,7 +437,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const { content, onSelectModel } = renderPanel()
 
-    await content.findByText(/Glm 4\.5 Air/i)
+    await content.findByText(/GLM-4\.5 Air/i)
 
     fireEvent.click(await content.findByText('Refresh models'))
 
@@ -467,7 +467,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const { content, onSelectModel } = renderPanel()
 
-    await content.findAllByText(/Glm 4\.5 Air/i)
+    await content.findAllByText(/GLM-4\.5 Air/i)
     fireEvent.click(await content.findByText('Refresh models'))
 
     await vi.waitFor(() => {
@@ -491,7 +491,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const { content, onSelectModel } = renderPanel()
 
-    const rows = await content.findAllByText(/Glm 4\.5 Air/i)
+    const rows = await content.findAllByText(/GLM-4\.5 Air/i)
     const items = [...new Set(rows.map(row => row.closest('[role="menuitem"]')))]
 
     expect(items).toHaveLength(2)
