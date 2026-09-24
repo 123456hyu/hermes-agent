@@ -105,10 +105,65 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     "{ mke2fs /dev/sda1; }",
     'bash -c "wipefs -a /dev/sda"',
     'sh -c "cat f > /dev/disk0"',
+    # ---- a shell-quoted DEVICE OPERAND is a real target, not prose (review P1 #1) ----
+    'cat x > "/dev/disk0"',
+    "cat x > '/dev/disk0'",
+    'cat x > "/dev/sda"',
+    "cat x > '/dev/nvme0n1'",
+    'cat x >"/dev/sda"',
+    'cat x >> "/dev/sda"',
+    'cat x >  "/dev/rdisk0"',
+    'cat x > "/dev/mapper/vg-root"',
+    'cat x > "/dev/disk/by-id/ata-Samsung_SSD"',
+    'dd if=/dev/zero of="/dev/disk0"',
+    "dd if=/dev/zero of='/dev/disk0'",
+    'dd if=/dev/zero of="/dev/sda" bs=1m',
+    "dd if=/dev/zero of='/dev/nvme0n1'",
+    # ---- the verb reaching the disk without appearing at _CMDPOS (review P1 #2) ----
+    # absolute and relative paths
+    "/usr/sbin/wipefs -a /dev/sda",
+    "/sbin/mkfs.ext4 /dev/sda1",
+    "/usr/local/bin/shred -n1 /dev/sda",
+    "/sbin/newfs_hfs /dev/disk2",
+    "./wipefs -a /dev/sda",
+    "../sbin/wipefs --all /dev/sda",
+    # scheduling / buffering wrappers
+    "nice blkdiscard /dev/sda",
+    "nice -n 10 sgdisk -Z /dev/sda",
+    "nice mkswap /dev/sda1",
+    "command mke2fs /dev/sda1",
+    "command shred -n 1 -z /dev/sda",
+    "stdbuf -oL dd if=/dev/zero of=/dev/sda",
+    "ionice -c3 blkdiscard /dev/nvme0n1",
+    "taskset -c 0 dd if=/dev/zero of=/dev/sda",
+    "chrt -f 1 blkdiscard /dev/sda",
+    # multicall binaries
+    "busybox dd if=/dev/zero of=/dev/sda",
+    "toybox dd if=/dev/zero of=/dev/sda",
+    "/bin/busybox dd if=/dev/zero of=/dev/sda",
+    # stacked with the wrappers _CMDPOS already peeled
+    "sudo /usr/sbin/wipefs -a /dev/sda",
+    "sudo nice blkdiscard /dev/sda",
+    # ---- the wrapper query-option carve-out must not become a way past the floor ----
+    # The query-option carve-out must not become a way past the floor.
+    "command mkfs.ext4 /dev/sda1",
+    "command -p mkfs.ext4 /dev/sda1",
+    "chrt -f 1 blkdiscard /dev/sda",
+    "taskset -c 0 dd if=/dev/zero of=/dev/sda",
+    "ionice -c3 blkdiscard /dev/nvme0n1",
+    # A real device path still matches after every boundary that is not a path character.
+    "cat x > /dev/sda",
+    'cat x > "/dev/sda"',
+    "dd if=/dev/zero of=/dev/sda",
+    "wipefs -a /dev/sda",
+    "wipefs -fa /dev/sda",
+    "mkswap /dev/sda1",
+    "shred -n 1 -z /dev/sda",
 ]
 
 
-# Commands that look similar but MUST stay runnable.
+# Commands that look similar but MUST stay runnable: reads, print-only tool runs, file
+# targets, prose, verb-named filenames, peeled wrappers in front of harmless commands.
 _BLOCK_DEVICE_HARDLINE_ALLOW = [
     # ---- /dev entries that are not block devices --------------------------
     "echo test > /dev/null",
@@ -159,174 +214,7 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     'gh pr create --body "this PR blocks shred /dev/nvme0n1"',
     "echo 'sgdisk -Z /dev/sda zaps the partition table'",
     'git commit -m "document dd if=/dev/zero of=/dev/disk0"',
-]
-
-
-@pytest.mark.parametrize("command", _BLOCK_DEVICE_HARDLINE_BLOCK)
-def test_disk_destroying_commands_are_hardline(command):
-    """Every spelling of "erase a whole disk" hits the unconditional floor."""
-    is_hardline, description = detect_hardline_command(command)
-    assert is_hardline, f"disk wipe leaked past the hardline floor: {command!r}"
-    assert description, "hardline match must provide a description"
-
-
-@pytest.mark.parametrize("command", _BLOCK_DEVICE_HARDLINE_ALLOW)
-def test_lookalike_commands_stay_runnable(command):
-    """Reads, print-only tool runs, file targets, and prose must not be blocked."""
-    is_hardline, description = detect_hardline_command(command)
-    assert not is_hardline, (
-        f"legitimate command false-positived the hardline floor: {command!r} "
-        f"(got: {description})"
-    )
-    assert description is None
-
-
-# Ordinary /dev pseudo-devices must not be dragged into the APPROVAL tier
-# either: the block-device fragment is shared with _SENSITIVE_WRITE_TARGET,
-# so `echo x > /dev/null` in a script would start prompting if it over-matched.
-@pytest.mark.parametrize("command", [
-    "echo test > /dev/null",
-    "cat noisy.log > /dev/null 2>&1",
-    "echo hi > /dev/stdout",
-    "echo hi > /dev/stderr",
-    "echo payload > /dev/shm/cache",
-    "echo hi > /dev/fd/1",
-    "cat file | tee /dev/tty",
-])
-def test_pseudo_device_writes_need_no_approval(command):
-    is_dangerous, _, description = detect_dangerous_command(command)
-    assert not is_dangerous, (
-        f"pseudo-device write started requiring approval: {command!r} "
-        f"(got: {description})"
-    )
-
-
-# The dangerous tier carried the same Linux-only spellings, so cp/mv/tee to a
-# non-`sd` device was auto-approved. Yolo may still bypass this tier — the point
-# is that an unattended session no longer writes a disk with no prompt at all.
-@pytest.mark.parametrize("command", [
-    "cp x /dev/nvme0n1",
-    "cp x /dev/disk0",
-    "mv x /dev/vda",
-    "mv x /dev/mapper/vg-root",
-    "tee /dev/disk0 < x",
-    "tee /dev/mapper/vg-root < x",
-    "echo x | tee /dev/nvme0n1",
-])
-def test_copy_and_tee_to_block_device_requires_approval(command):
-    is_dangerous, key, description = detect_dangerous_command(command)
-    assert is_dangerous, f"write to a block device was auto-approved: {command!r}"
-    assert key is not None and description
-
-
-@pytest.fixture
-def clean_session(monkeypatch):
-    """Reset session-scoped approval state around each test."""
-    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-    token = set_current_session_key("hardline_block_device_test")
-    try:
-        disable_session_yolo("hardline_block_device_test")
-        yield
-    finally:
-        disable_session_yolo("hardline_block_device_test")
-        reset_current_session_key(token)
-
-
-def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch):
-    """macOS/dm/wipe spellings stay blocked with HERMES_YOLO_MODE=1.
-
-    They previously reached the approval tier at best (`dd ... of=/dev/disk0`)
-    or no tier at all, and yolo bypasses everything above the floor.
-    """
-    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
-
-    for command in ("dd if=/dev/zero of=/dev/disk0", "cat x > /dev/rdisk0",
-                    "diskutil eraseDisk JHFS+ X disk0", "newfs_apfs /dev/disk2",
-                    "wipefs -a /dev/sda", "blkdiscard /dev/nvme0n1",
-                    "sgdisk -Z /dev/sda", "shred -z /dev/disk2",
-                    "mke2fs /dev/sda1", "cat x > /dev/mapper/vg-root"):
-        first = check_dangerous_command(command, "local")
-        assert first["approved"] is False, f"yolo leaked {command!r} (check_dangerous_command)"
-        assert first.get("hardline") is True
-
-        second = check_all_command_guards(command, "local")
-        assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
-        assert second.get("hardline") is True
-        assert "BLOCKED (hardline)" in second["message"]
-
-
-# ---------------------------------------------------------------------------
-# Review follow-up: two escape hatches that survived the first revision.
-#
-# Both reproduce on clean main as well, so neither was introduced here — but
-# this change is what claims the non-bypassable floor for these verbs, so it
-# is what has to close them.
-# ---------------------------------------------------------------------------
-
-# #1 — a shell-quoted DEVICE OPERAND is a real target, not prose. `cat x >
-# "/dev/disk0"` performs exactly the write the bare spelling does, but the
-# redirect rule is quote-masked (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS) and the
-# mask blanked the path before the rule saw it; the `dd` rule wanted `of=`
-# followed immediately by an unquoted device. Both landed in the dangerous
-# tier at best, and that is the tier `--yolo` / `approvals.mode: off` exists
-# to skip.
-_QUOTED_OPERAND_HARDLINE_BLOCK = [
-    'cat x > "/dev/disk0"',
-    "cat x > '/dev/disk0'",
-    'cat x > "/dev/sda"',
-    "cat x > '/dev/nvme0n1'",
-    'cat x >"/dev/sda"',
-    'cat x >> "/dev/sda"',
-    'cat x >  "/dev/rdisk0"',
-    'cat x > "/dev/mapper/vg-root"',
-    'cat x > "/dev/disk/by-id/ata-Samsung_SSD"',
-    'dd if=/dev/zero of="/dev/disk0"',
-    "dd if=/dev/zero of='/dev/disk0'",
-    'dd if=/dev/zero of="/dev/sda" bs=1m',
-    "dd if=/dev/zero of='/dev/nvme0n1'",
-]
-
-# #2 — the verb reaching the disk without ever appearing at _CMDPOS: spelled as
-# a path, run behind a scheduling/buffering wrapper, or dispatched by a
-# multicall binary. Measured on clean main, every one of these is BOTH
-# hardline=False and dangerous=False — no tier at all.
-_EXEC_POSITION_HARDLINE_BLOCK = [
-    # absolute and relative paths
-    "/usr/sbin/wipefs -a /dev/sda",
-    "/sbin/mkfs.ext4 /dev/sda1",
-    "/usr/local/bin/shred -n1 /dev/sda",
-    "/sbin/newfs_hfs /dev/disk2",
-    "./wipefs -a /dev/sda",
-    "../sbin/wipefs --all /dev/sda",
-    # scheduling / buffering wrappers
-    "nice blkdiscard /dev/sda",
-    "nice -n 10 sgdisk -Z /dev/sda",
-    "nice mkswap /dev/sda1",
-    "command mke2fs /dev/sda1",
-    "command shred -n 1 -z /dev/sda",
-    "stdbuf -oL dd if=/dev/zero of=/dev/sda",
-    "ionice -c3 blkdiscard /dev/nvme0n1",
-    "taskset -c 0 dd if=/dev/zero of=/dev/sda",
-    "chrt -f 1 blkdiscard /dev/sda",
-    # multicall binaries
-    "busybox dd if=/dev/zero of=/dev/sda",
-    "toybox dd if=/dev/zero of=/dev/sda",
-    "/bin/busybox dd if=/dev/zero of=/dev/sda",
-    # stacked with the wrappers _CMDPOS already peeled
-    "sudo /usr/sbin/wipefs -a /dev/sda",
-    "sudo nice blkdiscard /dev/sda",
-]
-
-# The traps the two widenings could plausibly spring. A path is allowed in
-# front of the verb, so a filename that merely CONTAINS a verb name must not
-# read as a command; a wrapper is peeled, so the wrapper in front of something
-# harmless must stay harmless; a quoted redirect operand is now visible, so an
-# ordinary quoted filename must not start blocking.
-_REVIEW_FOLLOWUP_ALLOW = [
+    # ---- traps the widenings could spring: verb-named files, peeled wrappers, quoted targets ----
     # a path that only contains the verb name
     "\n/opt/mkfs-notes.txt",
     "\n/var/log/mkfs-notes.txt",
@@ -353,77 +241,7 @@ _REVIEW_FOLLOWUP_ALLOW = [
     "echo 'cat x > /dev/sda'",
     "git commit -m 'ran dd if=/dev/zero of=/dev/disk0 once'",
     'git commit -m "dd if=/dev/zero of=/dev/sda is what broke it"',
-]
-
-
-@pytest.mark.parametrize("command", _QUOTED_OPERAND_HARDLINE_BLOCK)
-def test_quoting_the_device_operand_is_not_a_bypass(command):
-    """Shell quoting around the operand must not change the hardline verdict."""
-    is_hardline, description = detect_hardline_command(command)
-    assert is_hardline, f"quoted device operand slipped the floor: {command!r}"
-    assert description
-
-
-@pytest.mark.parametrize("command", _EXEC_POSITION_HARDLINE_BLOCK)
-def test_the_verb_reaches_the_floor_from_any_executable_position(command):
-    """A path, a wrapper or a multicall dispatch is not a way around the floor."""
-    is_hardline, description = detect_hardline_command(command)
-    assert is_hardline, f"verb never reached command position: {command!r}"
-    assert description
-
-
-@pytest.mark.parametrize("command", _REVIEW_FOLLOWUP_ALLOW)
-def test_the_two_widenings_do_not_invent_commands(command):
-    """Neither widening may turn a filename, a wrapper or prose into a block."""
-    is_hardline, description = detect_hardline_command(command)
-    assert not is_hardline, (
-        f"review follow-up false-positived the floor: {command!r} (got: {description})"
-    )
-    assert description is None
-
-
-def test_yolo_cannot_bypass_a_quoted_operand(clean_session, monkeypatch):
-    """The quoted spellings previously reached the dangerous tier at best, and
-    that is exactly the tier yolo skips."""
-    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
-    for command in ('cat x > "/dev/disk0"', "cat x > '/dev/sda'",
-                    'dd if=/dev/zero of="/dev/disk0"',
-                    "dd if=/dev/zero of='/dev/nvme0n1'",
-                    'cat x >> "/dev/mapper/vg-root"'):
-        first = check_dangerous_command(command, "local")
-        assert first["approved"] is False, f"yolo leaked {command!r} (check_dangerous_command)"
-        assert first.get("hardline") is True
-
-        second = check_all_command_guards(command, "local")
-        assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
-        assert second.get("hardline") is True
-        assert "BLOCKED (hardline)" in second["message"]
-
-
-def test_yolo_cannot_bypass_an_alternate_executable_position(clean_session, monkeypatch):
-    """These had no tier at all before, so yolo ran them without a prompt."""
-    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
-    for command in ("/usr/sbin/wipefs -a /dev/sda", "nice blkdiscard /dev/sda",
-                    "command mke2fs /dev/sda1", "busybox dd if=/dev/zero of=/dev/sda",
-                    "/sbin/mkfs.ext4 /dev/sda1", "nice -n 10 sgdisk -Z /dev/sda",
-                    "sudo /usr/sbin/wipefs -a /dev/sda"):
-        first = check_dangerous_command(command, "local")
-        assert first["approved"] is False, f"yolo leaked {command!r} (check_dangerous_command)"
-        assert first.get("hardline") is True
-
-        second = check_all_command_guards(command, "local")
-        assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
-        assert second.get("hardline") is True
-        assert "BLOCKED (hardline)" in second["message"]
-
-
-# ---------------------------------------------------------------------------
-# Second review round: four false-positive classes the first revision's allow
-# list did not reach. Each is a command that RUNS NOTHING destructive, on a
-# floor with no approval path — so matching one bans it outright.
-# ---------------------------------------------------------------------------
-
-_SECOND_ROUND_ALLOW = [
+    # ---- commands that RUN NOTHING destructive on a floor with no approval path ----
     # A wrapper's QUERY options do not run the verb. `command -v mkfs` prints a path; the shape
     # appears 15 times in a 42,222-line corpus of real command lines, and
     # `_COMMAND_WRAPPER_NON_EXECUTING_OPTIONS` already encodes exactly this.
@@ -471,31 +289,107 @@ _SECOND_ROUND_ALLOW = [
 ]
 
 
-@pytest.mark.parametrize("command", _SECOND_ROUND_ALLOW)
-def test_the_floor_does_not_reach_commands_that_destroy_nothing(command):
+@pytest.mark.parametrize("command", _BLOCK_DEVICE_HARDLINE_BLOCK)
+def test_disk_destroying_commands_are_hardline(command):
+    """Every spelling of "erase a whole disk" hits the unconditional floor — quoted operand,
+    path-spelled verb, scheduling wrapper or multicall dispatch included."""
+    is_hardline, description = detect_hardline_command(command)
+    assert is_hardline, f"disk wipe leaked past the hardline floor: {command!r}"
+    assert description, "hardline match must provide a description"
+
+
+@pytest.mark.parametrize("command", _BLOCK_DEVICE_HARDLINE_ALLOW)
+def test_lookalike_commands_stay_runnable(command):
+    """Nothing that runs no destructive write may hit a floor that has no approval path."""
     is_hardline, description = detect_hardline_command(command)
     assert not is_hardline, (
-        f"unapprovable floor caught a harmless command: {command!r} (got: {description})"
+        f"legitimate command false-positived the hardline floor: {command!r} "
+        f"(got: {description})"
     )
+    assert description is None
+
+
+# The dangerous (approval) tier shares the device fragment with _SENSITIVE_WRITE_TARGET: cp/mv/tee
+# to a non-`sd` device used to be auto-approved, while `echo x > /dev/null` must never start prompting.
+@pytest.mark.parametrize("command,needs_approval", [
+    *[(c, True) for c in [
+    "cp x /dev/nvme0n1",
+    "cp x /dev/disk0",
+    "mv x /dev/vda",
+    "mv x /dev/mapper/vg-root",
+    "tee /dev/disk0 < x",
+    "tee /dev/mapper/vg-root < x",
+    "echo x | tee /dev/nvme0n1",
+    ]],
+    *[(c, False) for c in [
+    "echo test > /dev/null",
+    "cat noisy.log > /dev/null 2>&1",
+    "echo hi > /dev/stdout",
+    "echo hi > /dev/stderr",
+    "echo payload > /dev/shm/cache",
+    "echo hi > /dev/fd/1",
+    "cat file | tee /dev/tty",
+    ]],
+])
+def test_dangerous_tier_block_device_writes(command, needs_approval):
+    is_dangerous, key, description = detect_dangerous_command(command)
+    assert is_dangerous is needs_approval, (
+        f"{command!r}: expected needs_approval={needs_approval} (got: {description})"
+    )
+    if needs_approval:
+        assert key is not None and description
+
+
+@pytest.fixture
+def clean_session(monkeypatch):
+    """Reset session-scoped approval state around each test."""
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    token = set_current_session_key("hardline_block_device_test")
+    try:
+        disable_session_yolo("hardline_block_device_test")
+        yield
+    finally:
+        disable_session_yolo("hardline_block_device_test")
+        reset_current_session_key(token)
 
 
 @pytest.mark.parametrize("command", [
-    # The query-option carve-out must not become a way past the floor.
-    "command mkfs.ext4 /dev/sda1",
-    "command -p mkfs.ext4 /dev/sda1",
-    "chrt -f 1 blkdiscard /dev/sda",
-    "taskset -c 0 dd if=/dev/zero of=/dev/sda",
-    "ionice -c3 blkdiscard /dev/nvme0n1",
-    # A real device path still matches after every boundary that is not a path character.
-    "cat x > /dev/sda",
-    'cat x > "/dev/sda"',
-    "dd if=/dev/zero of=/dev/sda",
+    "dd if=/dev/zero of=/dev/disk0",
+    "cat x > /dev/rdisk0",
+    "diskutil eraseDisk JHFS+ X disk0",
+    "newfs_apfs /dev/disk2",
     "wipefs -a /dev/sda",
-    "wipefs -fa /dev/sda",
-    "mkswap /dev/sda1",
-    "shred -n 1 -z /dev/sda",
+    "blkdiscard /dev/nvme0n1",
+    "sgdisk -Z /dev/sda",
+    "shred -z /dev/disk2",
+    "mke2fs /dev/sda1",
+    "cat x > /dev/mapper/vg-root",
+    'cat x > "/dev/disk0"',
+    "cat x > '/dev/sda'",
+    'dd if=/dev/zero of="/dev/disk0"',
+    "dd if=/dev/zero of='/dev/nvme0n1'",
+    'cat x >> "/dev/mapper/vg-root"',
+    "/usr/sbin/wipefs -a /dev/sda",
+    "nice blkdiscard /dev/sda",
+    "command mke2fs /dev/sda1",
+    "busybox dd if=/dev/zero of=/dev/sda",
+    "/sbin/mkfs.ext4 /dev/sda1",
+    "nice -n 10 sgdisk -Z /dev/sda",
+    "sudo /usr/sbin/wipefs -a /dev/sda",
 ])
-def test_the_second_round_carve_outs_do_not_open_the_floor(command):
-    is_hardline, description = detect_hardline_command(command)
-    assert is_hardline, f"carve-out let a disk destroyer through: {command!r}"
-    assert description
+def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
+    """These reached the approval tier at best (or no tier at all) — exactly what
+    HERMES_YOLO_MODE skips — so the integration path, not just the classifier, must block."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    first = check_dangerous_command(command, "local")
+    assert first["approved"] is False, f"yolo leaked {command!r} (check_dangerous_command)"
+    assert first.get("hardline") is True
+
+    second = check_all_command_guards(command, "local")
+    assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
+    assert second.get("hardline") is True
+    assert "BLOCKED (hardline)" in second["message"]

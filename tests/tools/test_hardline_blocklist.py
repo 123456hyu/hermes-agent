@@ -477,8 +477,8 @@ _DANGEROUS_TIER_STILL_FLAGGED = [
     ("sudo mkfs -t vfat /dev/sdc1", "format filesystem"),
     ("dd if=backup.img of=restore.img", "disk copy"),
     ("true && dd if=a.img of=b.img", "disk copy"),
-    ("wipefs -a /dev/sda", "raw block device wipe (shred/wipefs/blkdiscard)"),
-    ("sudo blkdiscard /dev/nvme0n1", "raw block device wipe (shred/wipefs/blkdiscard)"),
+    ("wipefs -a /dev/sda", "raw block device wipe (shred/wipefs/blkdiscard/sgdisk)"),
+    ("sudo blkdiscard /dev/nvme0n1", "raw block device wipe (shred/wipefs/blkdiscard/sgdisk)"),
 ]
 
 
