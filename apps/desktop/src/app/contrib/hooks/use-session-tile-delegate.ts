@@ -8,6 +8,7 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -457,11 +458,14 @@ export function useSessionTileDelegate({
             const running = resolveResumedBusy(resumed.running ?? info?.running, busyChangedWhileResuming)
 
             return {
-              ...state,
+              // The deferred build reports the session's own effort later (#79807).
+              ...markReasoningEffortPending(state),
               ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
               ...(typeof info?.model === 'string' ? { model: info.model } : {}),
               ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-              ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+              ...(typeof info?.reasoning_effort === 'string'
+                ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+                : {}),
               ...(typeof info?.reasoning_effort_wire === 'string'
                 ? { reasoningEffortWire: info.reasoning_effort_wire }
                 : {}),

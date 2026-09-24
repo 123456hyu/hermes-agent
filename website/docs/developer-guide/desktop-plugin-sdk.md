@@ -497,6 +497,76 @@ plugin write can never land in another session's composer.
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
 
+### Session rows — decorations + the session list API
+
+`SESSION_ROW_AREAS` (`leading`, `trailing`) let a plugin decorate sidebar
+session rows. Register a `data` contribution whose `render({ sessionId })`
+returns a small element (a badge, a swatch, a tag) or `null` for rows you don't
+own — registering costs nothing on every other row:
+
+```ts
+import { SESSION_ROW_AREAS, type SessionRowSlotContribution } from '@hermes/plugin-sdk'
+
+ctx.register({
+  area: SESSION_ROW_AREAS.trailing,
+  id: 'my-tag',
+  data: {
+    render: ({ sessionId }) => (owned.has(sessionId) ? <span className="my-tag">★</span> : null)
+  } satisfies SessionRowSlotContribution
+})
+```
+
+Pair it with the session list API, which writes the same stores the app's own
+controls write (so a plugin action and a hand click can never disagree):
+
+```ts
+host.sessions.pin(storedSessionId: string, pinned?: boolean, index?: number): void
+host.sessions.reorder(storedSessionIds: string[]): void   // Recents; [] = clear manual order → default sort
+host.sessions.reorderPinned(storedSessionIds: string[]): void  // Pinned section; omitted pins keep their slot
+host.sessions.setColor(storedSessionId: string, color: string | null): void
+```
+
+Ids are STORED session ids: a live id is resolved to its durable lineage root,
+so pins and colours survive compression's id rotation — and the row-decoration
+slots hand your render that same durable id (`_lineage_root_id ?? id`), never
+the live one. Resolution goes through the rows this window has loaded; an id
+that matches no loaded row is written as given, so pass the slot's durable id
+(not a live id you remembered) for a session that may have scrolled out of the
+list. `reorder` accepts the same ids and maps each to its row's live id
+internally — the Recents order store is keyed by the live id, like the drag
+path. `pin(id, true, index)` slots the pin at that position in the
+Pinned list (a drop target between two pins); without `index` it appends, like
+the row's ⇧-click.
+
+**Arbitration.** The verbs are discrete user-triggered edits of user data —
+last write wins, exactly as if the user had clicked, and no plugin owns the
+result afterwards. Slot contributions are ALL mounted (registration order, not
+first-wins), each inside its own error boundary: a plugin that throws or
+returns `null` for a row cannot suppress another plugin's decoration on it, and
+two decorations on one row render side by side. Core keeps the row's layout,
+gestures and title — slots augment, never replace.
+
+**Teardown.** The verbs need none. Slot contributions are removed by the
+`ctx.register` disposer (disable/reload drops them and the row re-renders
+without the decoration).
+
+Migration for the held catalog plugins:
+
+- **drag-to-pin-session** — replace the `__reactFiber$*` walk for `onTogglePin`
+  / `onReorderSessions` / `session._lineage_root_id` with the row's slot id
+  (`render: ({ sessionId }) => …` under `SESSION_ROW_AREAS.leading` gives you
+  the durable id per row), then `host.sessions.pin(sessionId, true, dropIndex)`
+  for a drop into the Pinned section, `host.sessions.pin(sessionId, false)` for
+  a drop back into Recents, `host.sessions.reorderPinned(ids)` for a drag
+  within the Pinned section, and `host.sessions.reorder([])` for its
+  "reset manual order" path.
+- **better-session-appearance** — replace the `localStorage`
+  `hermes.desktop.sessionColors` write and the fiber-harvested `onChange` with
+  `host.sessions.setColor(sessionId, hex)` (`null` clears), and render its
+  per-row glyph through `SESSION_ROW_AREAS.leading` instead of mutating the
+  row's status dot (the durable id it needed from `_lineage_root_id` is the
+  slot's `sessionId`).
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.
@@ -634,6 +704,11 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?, timeoutMs?, { spawnPriority? })   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinned=true); index = slot in Pinned;
+                                           //   same store the row's ⇧-click / drop writes
+host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
+host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
+host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -1133,10 +1208,10 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
-| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS` |
+| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |
