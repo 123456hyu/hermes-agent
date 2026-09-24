@@ -105,8 +105,8 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
     }
   }, 100)
 
-  const describeSeen = () =>
-    JSON.stringify([...seen].map(([pid, e]) => ({ pid, ...e, electronPid: app.process().pid })))
+  const electronPid = app.process().pid
+  const describeSeen = () => JSON.stringify([...seen].map(([pid, e]) => ({ pid, ...e, electronPid })))
 
   const finished = (marker: string, step = 0) =>
     expect
