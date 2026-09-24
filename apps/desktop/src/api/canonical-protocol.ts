@@ -66,6 +66,10 @@ export class CanonicalDesktopProtocol {
   wire(method: string, prepared: Record<string, unknown> = {}): string {
     if (MUTATION_METHODS.has(method)) { return 'session.mutate' }
 
+    // The warm-cache re-attach: canonical attach is `session.resume`, which
+    // rebinds the live event transport and returns the same snapshot shape.
+    if (method === 'session.activate') { return 'session.resume' }
+
     return method === 'slash.exec' && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
@@ -119,6 +123,10 @@ export class CanonicalDesktopProtocol {
       this.creates.set(key, String(requestId))
 
       return { ...result, request_id: requestId, source: 'gui' }
+    }
+
+    if (method === 'session.activate') {
+      return { session_id: params.session_id, source: 'desktop', ...(params.profile ? { profile: params.profile } : {}) }
     }
 
     if (method === 'session.interrupt' || method === 'session.redirect' || method === 'session.steer') {
@@ -238,7 +246,7 @@ export class CanonicalDesktopProtocol {
       return { ...value, session_id: value.ref.session_id }
     }
 
-    if (method === 'session.resume' || method === 'session.create') {
+    if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
       const sid = value.session_id
       this.event({ type: 'session.info', session_id: sid, payload: value })
 

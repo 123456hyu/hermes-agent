@@ -84,7 +84,11 @@ class AuthorityConnection:
                     result = await dispatch_group_control(self, method, params)
                     return {'jsonrpc': '2.0', 'id': rid, 'result': result}
                 if method not in handlers:
-                    raise RuntimeStoreError('invalid_params')
+                    # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
+                    # 4001 'invalid_params' would read as a bad argument on a method that exists.
+                    return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                        'code': -32601, 'message': f'unknown method: {method}',
+                        'data': {'reason': 'unknown_method'}}}
                 result = await handlers[method](ref, params)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
