@@ -11,7 +11,7 @@
 # on releases and manual dispatch only: it carries no Hermes code, so it does not track main.
 # The tag lives in the ARG so CI and a local build read one place; hadolint cannot
 # see through the substitution, hence the inline ignore.
-ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.11-nodejs20
+ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.13-nodejs26
 # hadolint ignore=DL3006
 FROM ${SANDBOX_BASE}
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
