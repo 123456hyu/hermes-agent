@@ -1206,8 +1206,6 @@ export const de = defineLocale({
           'Adoptieren Sie ein animiertes Petdex-Maskottchen, das über der App schwebt und darauf reagiert, was Hermes gerade tut – es rennt, während Tools laufen, feiert bei Erfolg und schmollt bei Fehlern.',
         restartHint:
           'Haustiere erfordern einen kurzen Neustart – die laufende App wurde gestartet, bevor diese Funktion hinzugefügt wurde. Schließen Sie Hermes, öffnen Sie es erneut und kehren Sie dann hierher zurück.',
-        on: 'An',
-        off: 'Aus',
         scaleTitle: 'Größe',
         scaleDesc: 'Ändert die Größe des schwebenden Maskottchens. Wirkt überall sofort.',
         roamTitle: 'Herumstreifen',
@@ -1303,7 +1301,6 @@ export const de = defineLocale({
         maxSnapshots: 'Checkpoint-Limit'
       },
       voice: {
-        recordKey: 'Sprach-Tastenkürzel',
         maxRecordingSeconds: 'Maximale Aufnahmelänge',
         autoTts: 'Antworten vorlesen',
         voiceChatMode: 'Sprachchat-Modus',

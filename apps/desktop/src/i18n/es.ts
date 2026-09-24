@@ -1204,8 +1204,6 @@ export const es = defineLocale({
           'Adopta una mascota animada de petdex que flota sobre la app y reacciona a lo que hace Hermes: corre mientras se ejecutan herramientas, celebra los éxitos y se entristece con los errores.',
         restartHint:
           'Las mascotas necesitan un reinicio rápido: la aplicación en ejecución se inició antes de que se añadiera esta función. Cierra y vuelve a abrir Hermes y luego vuelve aquí.',
-        on: 'Activada',
-        off: 'Desactivada',
         scaleTitle: 'Tamaño',
         scaleDesc: 'Cambia el tamaño de la mascota flotante. Se aplica al instante en todas partes.',
         roamTitle: 'Moverse libremente',
@@ -1300,7 +1298,6 @@ export const es = defineLocale({
         maxSnapshots: 'Límite de checkpoints'
       },
       voice: {
-        recordKey: 'Atajo de voz',
         maxRecordingSeconds: 'Duración máxima de grabación',
         autoTts: 'Leer respuestas en voz alta',
         voiceChatMode: 'Modo de chat de voz',
