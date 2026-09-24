@@ -1,4 +1,4 @@
-import { type GatewayEvent, type GatewayEventName, JsonRpcGatewayClient } from '@hermes/shared'
+import { type GatewayEvent, type GatewayEventName, JsonRpcGatewayClient, type ServerRequest, type ServerRequestHandler } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 
@@ -29,9 +29,66 @@ export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
 
+// Canonical shared prompts (`gateway/session_pending_controls.py`) travel as
+// `approval.request` / `clarify.request` EVENTS keyed by `prompt_id` and are
+// answered through `approval.respond` / `clarify.respond`. The renderer only
+// knows server→client REQUESTS (#110521), so each prompt event is delivered to
+// the same `onRequest` registry as a request whose `respond` issues the RPC.
+const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'approval.request': 'approval', 'clarify.request': 'clarify' }
+
 export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
   private readonly protocol = new CanonicalDesktopProtocol()
+  private readonly promptHandlers = new Set<ServerRequestHandler>()
+  private readonly deliveredPrompts = new Set<string>()
+
+  override onRequest(handler: ServerRequestHandler): () => void {
+    this.promptHandlers.add(handler)
+    const off = super.onRequest(handler)
+
+    return () => {
+      this.promptHandlers.delete(handler)
+      off()
+    }
+  }
+
+  private deliverCanonicalPrompt(event: { type: string; session_id?: string; payload?: unknown }, replayed: boolean) {
+    const kind = CANONICAL_PROMPT_EVENTS[event.type]
+    const p = event.payload as Record<string, unknown> | undefined
+    const sid = event.session_id
+
+    if (!kind || !p || !sid || typeof p.prompt_id !== 'string') { return }
+    const id = p.prompt_id
+
+    if (this.deliveredPrompts.has(id)) { return }
+    this.deliveredPrompts.add(id)
+    const choices = Array.isArray(p.choices) ? p.choices : []
+
+    const params: Record<string, unknown> = kind === 'clarify'
+      ? { session_id: sid, question: p.question, choices, multi_select: p.multi_select, questions: p.questions, answers: p.answers }
+      : { session_id: sid, request_id: id, command: p.command, description: p.description, choices,
+          allow_permanent: choices.includes('always'), edit: p.edit }
+
+    let settled = false
+
+    const request: ServerRequest = {
+      id,
+      method: kind,
+      params,
+      replayed,
+      respond: result => {
+        if (settled) { return }
+        settled = true
+        const answer = kind === 'clarify' ? { answer: result.answer } : { choice: result.choice }
+        void this.request(`${kind}.respond`, { session_id: sid, request_id: id, ...answer }).catch(() => undefined)
+      },
+      fail: () => { settled = true }
+    }
+
+    for (const handler of this.promptHandlers) {
+      if (handler(request) !== false) { return }
+    }
+  }
 
   override on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
     return super.on<K>(type, event => {
@@ -56,7 +113,18 @@ export class HermesGateway extends JsonRpcGatewayClient {
     try {
       const result = await super.request<T>(wireMethod, prepared, timeoutMs, signal)
 
-      return this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), (m, p) => this.request(m, p)) as T
+      const settled = this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), (m, p) => this.request(m, p)) as T
+
+      if (method === 'session.resume' || method === 'session.create') {
+        // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
+        const sid = (settled as { session_id?: string }).session_id
+
+        for (const prompt of ((settled as { prompts?: Array<Record<string, unknown>> }).prompts ?? [])) {
+          this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, payload: prompt }, true)
+        }
+      }
+
+      return settled
     } catch (error) {
       this.protocol.failure(prepared, error)
       throw error
@@ -88,7 +156,18 @@ export class HermesGateway extends JsonRpcGatewayClient {
         return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
       }
     })
-    this.onEvent(event => { if (this.canonical) { this.protocol.event(event) } })
+    this.onEvent(event => {
+      if (!this.canonical) { return }
+      this.protocol.event(event)
+
+      if (event.type in CANONICAL_PROMPT_EVENTS) {
+        this.deliverCanonicalPrompt(event, false)
+      } else if (event.type.endsWith('.settled')) {
+        const id = (event.payload as { prompt_id?: unknown } | undefined)?.prompt_id
+
+        if (typeof id === 'string') { this.deliveredPrompts.delete(id) }
+      }
+    })
   }
 }
 
