@@ -63,6 +63,13 @@ Q2 = "Now summarise what you found (Q2-marker)."
 FINAL_ONE = f"The file says {CANARY} (FINAL-ONE)"
 FINAL_TWO = "Summary: the canary was read (FINAL-TWO)"
 LATE_TEXT = "LATE-ANSWER-65788"
+# Compaction: the system prompt + tool bridge alone is ~18K estimated tokens; eight ~1.2K-token file reads
+# cross this absolute threshold mid-turn (ACP reports no usage, so Hermes estimates).
+COMPACT_THRESHOLD = 21_000
+COMPACT_FILES = 8
+COMPACT_ASK = "Read f1.txt through f8.txt one by one, then say done (COMPACT-ASK)."
+SUMMARY = "SUMMARY-ACP-7f3: files f1..fN were read; each is lorem ipsum filler."
+FINAL_COMPACT = "All eight files read (FINAL-COMPACT)."
 
 
 class KnownSymptom(AssertionError):
@@ -136,7 +143,23 @@ def _late(root: Path) -> Scenario:
     return sc
 
 
-SCENARIOS: dict[str, Callable[[Path], Scenario]] = {"flow": _flow, "late": _late}
+def _compaction(root: Path) -> Scenario:
+    """Eight read_file calls in one turn cross ``compression.threshold_tokens``; the summarizer runs
+    through the same ACP provider (no tool bridge -> the fake answers ``SUMMARY``)."""
+    project = NativeHome(root).project
+    turns = [[acp.thought(f"step {i}"), acp.message(acp.hermes_tool_call(
+        f"call_f{i}", "read_file", {"path": str(project / f"f{i}.txt")}))] for i in range(1, COMPACT_FILES + 1)]
+    fake = acp.AcpFake(root / "acp", [*turns, [acp.message(FINAL_COMPACT)]], models=MODELS, aux_text=SUMMARY)
+    nh = make_home(root, {"provider": "copilot-acp", "default": CONFIGURED_MODEL}, env_file=fake.env(),
+                   extra_config={"compression": {"threshold_tokens": COMPACT_THRESHOLD, "protect_last_n": 4}})
+    for i in range(1, COMPACT_FILES + 1):
+        (nh.project / f"f{i}.txt").write_text(f"file {i} " + "lorem ipsum dolor " * 250 + "\n", encoding="utf-8")
+    sc = Scenario(nh, fake)
+    sc.runs.append(run_chat(nh, COMPACT_ASK))
+    return sc
+
+
+SCENARIOS: dict[str, Callable[[Path], Scenario]] = {"flow": _flow, "late": _late, "compaction": _compaction}
 
 
 @pytest.fixture(scope="module")
@@ -249,6 +272,33 @@ def test_no_agent_process_outlives_the_cli(outcomes):
     wedged = {r["pid"] for r in sc.fake.events("signal")}
     assert len(pids) == 3 and wedged, "vacuity: the scenario must spawn 3 agents that ignored SIGTERM"
     wait_until(lambda: not [p for p in pids if _alive(p)], 10.0, f"agent processes {pids} to exit")
+
+
+def _transcript(record: dict[str, Any]) -> str:
+    text = acp.prompt_text(record)
+    return text[text.find("Conversation transcript:"):]
+
+
+def test_compaction_in_an_acp_session_keeps_the_next_prompt_valid_and_grounded(outcomes):
+    """Auto compaction mid-turn: the summary is produced through the ACP agent itself, the next
+    main-turn prompt is schema-valid and carries the summary + the user's ask + the protected tail
+    (latest tool result) while the summarized tool output is gone; the turn completes once."""
+    sc = outcomes["compaction"]
+    run = sc.runs[0]
+    assert run.returncode == 0 and FINAL_COMPACT in run.stdout, run.describe()
+    assert sc.fake.invalid() == [], f"requests rejected by the ACP schema: {sc.fake.invalid()}"
+    aux = sc.fake.aux_prompts()
+    assert aux, "compaction never called the summarizer through the ACP provider"
+    assert "file 2 lorem" in acp.prompt_text(aux[0]), "the summarizer did not receive the history to compact"
+    after = [r for r in sc.fake.main_prompts() if r["t"] > aux[0]["t"]]
+    assert after, "no main-turn call followed the compaction"
+    final = _transcript(after[-1])
+    assert SUMMARY in final and COMPACT_ASK in final, "post-compaction prompt lost the summary or the user's ask"
+    assert f"file {COMPACT_FILES} lorem" in final, "post-compaction prompt lost the latest tool result"
+    assert "file 2 lorem" not in final, "summarized tool output is still resent after compaction"
+    rows = messages(sc.nh, latest_session(sc.nh))
+    assert_no_duplicate_assistant_text(rows, FINAL_COMPACT)
+    assert any(FINAL_COMPACT in (r["content"] or "") for r in rows if r["role"] == "assistant"), rows
 
 
 @pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["late_chunk"])

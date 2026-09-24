@@ -97,11 +97,12 @@ class AcpFake:
     """One scenario directory: ``script.json`` in, ``transcript.jsonl`` out, plus a launcher."""
 
     def __init__(self, state_dir: Path, turns: list[list[dict[str, Any]]], *, models: list[str] | None = None,
-                 current_model: str | None = None, ignore_sigterm: bool = False, load_session: bool = True):
+                 current_model: str | None = None, ignore_sigterm: bool = False, load_session: bool = True,
+                 aux_text: str = AUX_ANSWER):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         script = {"turns": turns, "models": models or [], "current_model": current_model,
-                  "ignore_sigterm": ignore_sigterm, "load_session": load_session}
+                  "ignore_sigterm": ignore_sigterm, "load_session": load_session, "aux_text": aux_text}
         (self.state_dir / "script.json").write_text(json.dumps(script), encoding="utf-8")
         self.launcher = self.state_dir / "copilot"
         self.launcher.write_text(
@@ -126,6 +127,10 @@ class AcpFake:
     def main_prompts(self) -> list[dict[str, Any]]:
         """Main-turn ``session/prompt`` records (those carrying Hermes' tool bridge)."""
         return [r for r in self.inbound("session/prompt") if r.get("main")]
+
+    def aux_prompts(self) -> list[dict[str, Any]]:
+        """Auxiliary ``session/prompt`` records (no tool bridge: compaction summaries, titles)."""
+        return [r for r in self.inbound("session/prompt") if not r.get("main")]
 
     def invalid(self) -> list[dict[str, Any]]:
         return [r for r in self.records() if r["dir"] == "in" and r.get("errors")]
@@ -296,7 +301,7 @@ class Agent:
         text = "".join(b.get("text", "") for b in params["prompt"] if b.get("type") == "text")
         session_id = params["sessionId"]
         if TOOLS_MARKER not in text:  # auxiliary call (title/summary): never consumes a scripted turn
-            self.update(session_id, self._chunk("agent_message_chunk", AUX_ANSWER))
+            self.update(session_id, self._chunk("agent_message_chunk", self.script.get("aux_text") or AUX_ANSWER))
             self.reply(msg_id, self.s.PromptResponse(stop_reason="end_turn"))
             return
         turns = self.script.get("turns") or []
