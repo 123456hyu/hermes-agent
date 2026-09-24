@@ -33,7 +33,7 @@ from typing import Any, Callable
 
 import pytest
 
-from tests.e2e.core.providers._native_helpers import TURN_TIMEOUT, NativeHome, make_home
+from tests.e2e.core.providers._native_helpers import TURN_TIMEOUT, KnownSymptom, NativeHome, make_home
 from tests.fakes.providers import copilot_acp as acp
 
 pytest.importorskip("acp.schema", reason="the fake validates against the agent-client-protocol package (acp extra)")
@@ -47,10 +47,6 @@ HEAD, ANSWER, THOUGHT = "DEEP-HEAD ", "DEEP-ANSWER-DONE", "DEEP-THOUGHT"
 THOUGHT_STEPS, STEP_S = 8, 0.5
 MIN_SPAN_S = THOUGHT_STEPS * STEP_S * 0.75  # vacuity: the agent really spent seconds before its result
 MARKERS = (HEAD.strip(), THOUGHT, ANSWER)
-
-
-class KnownSymptom(AssertionError):
-    """Raised ONLY for a tracked bug's exact symptom, so a strict xfail cannot hide an unrelated failure."""
 
 
 KNOWN: dict[str, str] = {

@@ -27,6 +27,7 @@ pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI 
 
 from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     ChatResult,
+    KnownSymptom,
     NativeHome,
     latest_session,
     make_home,
@@ -234,12 +235,13 @@ def test_expired_token_is_reminted_and_request_retried(results: dict[str, Any]) 
     assert [r["role"] for r in rows] == ["user", "assistant", "tool", "assistant"], rows
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN["default_toolset"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["default_toolset"])
 def test_default_toolset_schemas_accepted_by_vertex(results: dict[str, Any]) -> None:
     """With Hermes' default toolsets every tool declaration must survive Vertex's translation."""
     res = results["default_toolset"]
     fake = res["fake"]
     require(fake.requests and fake.requests[0]["auth"].startswith("Bearer ya29."), "turn never reached Vertex")
     schema_rejects = [r["rejected"] for r in fake.rejected() if "schema type should be ARRAY" in (r["rejected"] or "")]
-    assert not schema_rejects, f"Vertex rejected the tool declarations: {schema_rejects[0]}"
+    if schema_rejects:
+        raise KnownSymptom(f"Vertex rejected the tool declarations: {schema_rejects[0]}")
     assert "Default toolset answer." in res["turn"].stdout, res["turn"].describe()

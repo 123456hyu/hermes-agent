@@ -14,6 +14,7 @@ asserts the retry semantics the user sees:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import signal
@@ -28,6 +29,7 @@ import pytest
 
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
+    KnownSymptom,
     NativeHome,
     latest_session,
     make_home,
@@ -48,10 +50,6 @@ API_MAX_RETRIES = 2  # _native_helpers.make_home pins agent.api_max_retries
 OK_TEXT = "RECOVERED-ANSWER-OK"
 PARTIAL = "PARTIAL-BEFORE-CRASH "
 CRASH_STDERR = "fatal: agent segfaulted (fake)"
-
-
-class KnownSymptom(AssertionError):
-    """Raised ONLY for a tracked bug's exact symptom, so a strict xfail cannot hide an unrelated failure."""
 
 
 KNOWN: dict[str, str] = {
@@ -119,7 +117,8 @@ def outcomes(tmp_path_factory: pytest.TempPathFactory):
     for out in done.values():
         for pid in out.fake.pids():
             if _alive(pid):
-                os.kill(pid, signal.SIGKILL)
+                with contextlib.suppress(ProcessLookupError):  # exited between the check and the kill
+                    os.kill(pid, signal.SIGKILL)
 
 
 @pytest.mark.parametrize("name", list(ROWS))

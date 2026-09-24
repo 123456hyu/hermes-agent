@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 
 CLI_VERSION = "0.147.0"
 INVALID_REQUEST = -32600
+GRANDCHILD_RELEASE = "release-grandchildren"
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -579,10 +580,19 @@ def _step_permissions(ctx: _TurnCtx, step: dict) -> None:
         permissions={"network": {"enabled": True}}))
 
 
+# The descendant lives until the harness drops the release file (or 600 s pass), so the test side can
+# retire an orphan without signalling a process that is no longer in its own subtree.
+_GRANDCHILD = ("import os, sys, time\n"
+               "deadline = time.monotonic() + 600\n"
+               "while time.monotonic() < deadline and not os.path.exists(sys.argv[1]):\n"
+               "    time.sleep(0.2)\n")
+
+
 def _step_grandchild(ctx: _TurnCtx, step: dict) -> None:
     """A descendant in its own session (like codex's stdio MCP servers)."""
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    child = subprocess.Popen([sys.executable, "-c", _GRANDCHILD, str(ctx.server.state_dir / GRANDCHILD_RELEASE)],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
     ctx.server.record({"event": "grandchild", "child_pid": child.pid})
 
 
@@ -695,7 +705,14 @@ class CodexRun:
                 if e.get("dir") == "in" and e.get("msg", {}).get("method") == method and "id" in e["msg"]]
 
     def cleanup(self) -> None:
-        """Kill anything the fake spawned that is still alive (orphan scenarios)."""
+        """Retire anything the fake spawned that is still alive (orphan scenarios).
+
+        Orphaned descendants are released cooperatively first: by teardown they are reparented to init,
+        outside the test's process subtree, where a live-system guard (rightly) refuses to signal them."""
+        (self.fake.state_dir / GRANDCHILD_RELEASE).touch()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and any(pid_alive(p) for p in self.fake.grandchild_pids()):
+            time.sleep(0.05)
         for pid in self.fake.spawned_pids() + self.fake.grandchild_pids():
             if pid_alive(pid):
                 with contextlib.suppress(OSError):

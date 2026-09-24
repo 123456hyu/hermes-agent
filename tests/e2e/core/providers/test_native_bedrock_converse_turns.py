@@ -21,7 +21,7 @@ import pytest
 pytest.importorskip("botocore")
 
 from tests.e2e.core.providers._native_helpers import (  # noqa: E402
-    ChatResult, NativeHome, latest_session, make_home, messages, run_chat, session_ids, tool_calls_of,
+    ChatResult, KnownSymptom, NativeHome, latest_session, make_home, messages, run_chat, session_ids, tool_calls_of,
 )
 from tests.fakes.providers.bedrock_converse import (  # noqa: E402
     ACCESS_KEY, REGION, SECRET_KEY, FakeBedrock, Reasoning, Text, ToolUse, Turn, seq,
@@ -225,11 +225,13 @@ def _reasoning_rows(nh: NativeHome) -> list[str]:
     return [r["reasoning_content"] for r in messages(nh) if r["role"] == "assistant" and r["reasoning_content"]]
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["reasoning_shredded"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["reasoning_shredded"])
 def test_persisted_reasoning_equals_the_streamed_reasoning_text(runs: dict[str, Any]) -> None:
+    _ok(runs["tools"]["result"])
     persisted = _reasoning_rows(runs["tools"]["nh"])
     assert [p.replace("\n\n", "") for p in persisted] == [R_A1, R_A2, R_A3], persisted
-    assert persisted == [R_A1, R_A2, R_A3], f"{KNOWN['reasoning_shredded']}: {persisted}"
+    if persisted != [R_A1, R_A2, R_A3]:  # same text once the blank lines are removed: exactly the bug
+        raise KnownSymptom(f"{KNOWN['reasoning_shredded']}: {persisted}")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -256,15 +258,22 @@ def test_resume_in_new_process_replays_tool_history_valid_for_converse(runs: dic
     assert rows[-1]["content"] == FINAL_B2
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["resume_drops_reasoning"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["resume_drops_reasoning"])
 def test_resume_replays_signed_reasoning_verbatim(runs: dict[str, Any]) -> None:
-    requests = runs["resume"]["requests"]
+    run = runs["resume"]
+    _ok(run["first"])
+    _ok(run["second"])
+    requests = run["requests"]
+    assert len(requests) == 3, f"expected 2 turn-1 calls + 1 resumed call, fake saw {len(requests)}"
     signed = [b for b in requests[0]["emitted"] if "reasoningContent" in b]
+    assert signed, requests[0]["emitted"]
     # In-process the tool-use turn goes back with its signed reasoning ...
     assert requests[1]["body"]["messages"][1]["content"][0] == signed[0]
     # ... and after --resume (new process) it must be identical.
     resumed = requests[2]["body"]["messages"]
-    assert resumed[1]["content"][0] == signed[0], f"{KNOWN['resume_drops_reasoning']}: {resumed[1]['content']}"
+    if not [b for b in resumed[1]["content"] if "reasoningContent" in b]:
+        raise KnownSymptom(f"{KNOWN['resume_drops_reasoning']}: {resumed[1]['content']}")
+    assert resumed[1]["content"][0] == signed[0], resumed[1]["content"]
     assert [b for b in resumed[3]["content"] if "reasoningContent" in b] == [
         b for b in requests[1]["emitted"] if "reasoningContent" in b]
 

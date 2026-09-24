@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
-from tests.e2e.core.providers._native_helpers import ChatResult, make_home, run_chat  # noqa: E402
+from tests.e2e.core.providers._native_helpers import ChatResult, KnownSymptom, make_home, run_chat  # noqa: E402
 from tests.fakes.providers.vertex import (  # noqa: E402
     PROJECT,
     REGION,
@@ -137,7 +137,7 @@ def test_oauth_invalid_grant_sends_nothing_and_names_the_credential(results: dic
 
 
 def _guidance_param(name: str) -> Any:
-    return pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN[f"guidance:{name}"]))
+    return pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN[f"guidance:{name}"]))
 
 
 @pytest.mark.parametrize("name", [_guidance_param("permission_denied"), _guidance_param("unauthenticated")])
@@ -149,4 +149,5 @@ def test_auth_failure_guidance_is_vertex_specific(results: dict[str, Any], name:
     if not (res["fake"].requests and turn.returncode != 0):
         raise RuntimeError(f"{name}: the auth failure never happened:\n{turn.describe()}")
     guidance = _output(turn).split("Provider said:")[0].lower()
-    assert "api key" not in guidance, f"Vertex auth failure blamed on an API key:\n{turn.stdout}"
+    if "api key" in guidance:
+        raise KnownSymptom(f"Vertex auth failure blamed on an API key:\n{turn.stdout}")

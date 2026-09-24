@@ -127,14 +127,18 @@ TERMINAL = {  # case -> a word the surfaced error must carry (None: any visible 
 
 
 def _terminal_param(name: str):
-    marks = [pytest.mark.xfail(strict=True, reason=KNOWN[name])] if name in KNOWN else []
+    marks = [pytest.mark.xfail(strict=True, raises=nh.KnownSymptom, reason=KNOWN[name])] if name in KNOWN else []
     return pytest.param(name, marks=marks, id=name)
 
 
 @pytest.mark.parametrize("name", [_terminal_param(n) for n in TERMINAL])
 def test_non_retryable_surfaced_once(outcomes: dict[str, Outcome], name: str) -> None:
     o = outcomes[name]
-    assert len(o.calls) == 1, f"terminal Google response was re-sent {len(o.calls)}x\n{o.describe()}"
+    assert o.calls, f"no request reached the fake\n{o.describe()}"
+    if len(o.calls) != 1:
+        # The tracked bug's symptom for KNOWN cases; a plain failure for every other terminal case.
+        failure = nh.KnownSymptom if name in KNOWN else AssertionError
+        raise failure(f"terminal Google response was re-sent {len(o.calls)}x\n{o.describe()}")
     assert o.result.returncode != 0, o.describe()
     word = TERMINAL[name]
     lines = [ln.strip() for ln in o.result.stdout.splitlines() if ln.strip()]

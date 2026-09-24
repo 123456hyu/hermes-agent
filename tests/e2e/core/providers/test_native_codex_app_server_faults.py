@@ -13,10 +13,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from tests.e2e.core.providers._native_helpers import messages, wait_until
+from tests.e2e.core.providers._native_helpers import KnownSymptom, messages, wait_until
 from tests.fakes.providers.codex_app_server import CodexRun, pid_alive, run_codex_scenario
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh wrapper + /proc PID checks")
+pytestmark = [
+    pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh wrapper + /proc PID checks"),
+    # The orphaned own-session grandchild (#121298) is released cooperatively by CodexRun.cleanup(); the
+    # bypass covers its SIGKILL fallback for anything still alive (reparented to init by then).
+    pytest.mark.live_system_guard_bypass,
+]
 
 KNOWN = {
     "q_approval": "#121296 approval in `chat -q` waits the full approvals.timeout instead of single_query_mode",
@@ -98,36 +103,45 @@ def test_will_retry_error_notification_is_not_terminal(runs):
     assert _assistant_texts(run) == ["RETRY-OK"]
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["failed_hidden"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["failed_hidden"])
 def test_failed_turn_after_agent_message_surfaces_reason(runs):
     run = runs["failed_hidden"]
     assert run.results[0].returncode != 0 and "PARTIAL-B" in run.results[0].stdout, run.results[0].describe()
-    assert "FAIL-MARKER-89" in run.output, "turn failure reason never shown to the user"
+    if "FAIL-MARKER-89" not in run.output:
+        raise KnownSymptom(f"turn failure reason never shown to the user: {run.output!r}")
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["q_approval"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["q_approval"])
 def test_single_query_approval_resolves_without_waiting_for_a_human(runs):
     run = runs["q_approval"]
     entries = run.fake.entries()
-    sent = next(e for e in entries if e.get("dir") == "out"
-                and e["msg"].get("method") == "item/commandExecution/requestApproval")
-    reply = next(e for e in entries if e.get("reply_to") == "item/commandExecution/requestApproval")
-    assert reply["msg"]["id"] == sent["msg"]["id"] and not reply.get("violation"), reply
-    waited = reply["t"] - sent["t"]
-    assert waited < APPROVAL_TIMEOUT_S / 2, f"approval parked {waited:.1f}s on a prompt nobody can answer in -q"
+    sent = [e for e in entries if e.get("dir") == "out"
+            and e["msg"].get("method") == "item/commandExecution/requestApproval"]
+    replies = [e for e in entries if e.get("reply_to") == "item/commandExecution/requestApproval"]
+    assert len(sent) == 1 and len(replies) == 1, f"approval request/reply not exchanged once: {sent} {replies}"
+    reply = replies[0]
+    assert reply["msg"]["id"] == sent[0]["msg"]["id"] and not reply.get("violation"), reply
+    waited = reply["t"] - sent[0]["t"]
+    if waited >= APPROVAL_TIMEOUT_S / 2:
+        raise KnownSymptom(f"approval parked {waited:.1f}s on a prompt nobody can answer in -q")
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["permissions"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["permissions"])
 def test_permissions_request_reply_matches_protocol(runs):
     run = runs["permissions"]
     replies = run.fake.replies_to("item/permissions/requestApproval")
     assert len(replies) == 1, f"permissions request unanswered: {replies}"
-    assert not replies[0].get("violation"), f"invalid PermissionsRequestApprovalResponse: {replies[0]}"
+    violation = replies[0].get("violation") or ""
+    if "permissions" in violation:
+        raise KnownSymptom(f"PermissionsRequestApprovalResponse without `permissions`: {replies[0]}")
+    assert not violation, f"invalid PermissionsRequestApprovalResponse: {replies[0]}"
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["orphan"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["orphan"])
 def test_cli_exit_reaps_app_server_descendants(runs):
     run = runs["orphan"]
     assert run.results[0].returncode == 0 and "REAP-DONE" in run.results[0].stdout, run.results[0].describe()
-    (child,) = run.fake.grandchild_pids()
-    wait_until(lambda: not pid_alive(child), 3.0, f"app-server descendant {child} to be reaped after CLI exit")
+    children = run.fake.grandchild_pids()
+    assert len(children) == 1, f"the fake must have spawned exactly one descendant: {children}"
+    wait_until(lambda: not pid_alive(children[0]), 3.0,
+               f"app-server descendant {children[0]} to be reaped after CLI exit", error=KnownSymptom)

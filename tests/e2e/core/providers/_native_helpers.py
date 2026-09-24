@@ -169,15 +169,24 @@ def tool_calls_of(row: dict[str, Any]) -> list[dict[str, Any]]:
     return json.loads(raw) if raw else []
 
 
-def wait_until(predicate: Callable[[], Any], timeout: float, what: str, interval: float = 0.05) -> Any:
-    """Poll ``predicate`` until truthy or raise with ``what`` (no bare sleeps as synchronization)."""
+class KnownSymptom(AssertionError):
+    """Raised ONLY at a tracked bug's exact symptom.
+
+    Every KNOWN strict xfail uses ``raises=KnownSymptom`` so a harness failure (process death, timeout,
+    precondition assert, fixture teardown error) fails for real instead of counting as the known bug.
+    """
+
+
+def wait_until(predicate: Callable[[], Any], timeout: float, what: str, interval: float = 0.05,
+               error: type[AssertionError] = AssertionError) -> Any:
+    """Poll ``predicate`` until truthy or raise ``error`` naming ``what`` (no bare sleeps as synchronization)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = predicate()
         if value:
             return value
         time.sleep(interval)
-    raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+    raise error(f"timed out after {timeout}s waiting for {what}")
 
 
 def assert_no_duplicate_assistant_text(rows: list[dict[str, Any]], needle: str) -> None:

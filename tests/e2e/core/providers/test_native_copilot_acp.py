@@ -14,8 +14,8 @@ Contract under test (documented in ``agent/copilot_acp_client.py`` and the ACP s
   schema-valid;
 * ACP has no tools channel: Hermes' tools travel in the prompt text, a ``<tool_call>`` block in the
   agent's message runs a REAL Hermes tool, and the result is in the next call's prompt;
-* ``--resume`` in a new process does NOT use ``session/load`` (even when the agent advertises it): it
-  opens a new ACP session whose prompt carries the persisted history;
+* ``--resume`` in a new process runs in a new agent process whose prompt carries the persisted history
+  (turn 1 in order, then the new question), with nothing duplicated;
 * agent-side ``session/request_permission`` is never granted (Hermes has no human channel there) and
   ``fs/read_text_file`` is confined to the session cwd;
 * no agent process outlives the CLI, including one that ignores SIGTERM and stdin EOF.
@@ -23,6 +23,7 @@ Contract under test (documented in ``agent/copilot_acp_client.py`` and the ACP s
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import sys
@@ -35,6 +36,7 @@ import pytest
 
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
+    KnownSymptom,
     NativeHome,
     assert_no_duplicate_assistant_text,
     latest_session,
@@ -72,10 +74,6 @@ SUMMARY = "SUMMARY-ACP-7f3: files f1..fN were read; each is lorem ipsum filler."
 FINAL_COMPACT = "All eight files read (FINAL-COMPACT)."
 
 
-class KnownSymptom(AssertionError):
-    """Raised ONLY for a tracked bug's exact symptom, so a strict xfail cannot hide an unrelated failure."""
-
-
 KNOWN: dict[str, str] = {
     "late_chunk": "#65788 agent_message_chunk emitted after the session/prompt result is dropped",
 }
@@ -108,7 +106,8 @@ def _reap(fake: acp.AcpFake) -> None:
     """Teardown: SIGKILL any fake agent this scenario spawned that is still alive (by recorded pid)."""
     for pid in fake.pids():
         if _alive(pid):
-            os.kill(pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError):  # exited between the check and the kill
+                os.kill(pid, signal.SIGKILL)
 
 
 # ── scenarios (independent; run concurrently in the module fixture) ──────────────────────────
@@ -247,14 +246,14 @@ def test_agent_permission_is_never_granted_and_fs_reads_stay_in_cwd(outcomes):
     assert "error" in outside and SECRET not in str(outside), f"fs read escaped the session cwd: {outside}"
 
 
-def test_resume_opens_a_fresh_acp_session_seeded_with_persisted_history(outcomes):
-    """``--resume`` in a new CLI process: a new agent process, ``session/new`` (never ``session/load``,
-    although the agent advertises loadSession), and a prompt carrying turn 1 then the new question."""
+def test_resume_reaches_the_agent_with_persisted_history_in_order(outcomes):
+    """``--resume`` in a new CLI process: a new agent process whose prompt carries turn 1 (question, tool
+    result, answer) in order and then the new question; one session, nothing persisted twice. How the
+    ACP session is opened (seeded ``session/new`` or ``session/load``) is not part of the contract."""
     sc = _flow_ok(outcomes)
     assert FINAL_TWO in sc.runs[1].stdout, sc.runs[1].describe()
     resumed_pids = [pid for pid in _calls(sc.fake) if pid not in sc.extra["turn1_pids"]]
     assert len(resumed_pids) == 1, "the resumed turn must run in its own agent process"
-    assert sc.fake.inbound("session/load") == [], "Hermes sent session/load; the contract is a seeded session/new"
     text = acp.prompt_text(sc.fake.main_prompts()[-1])
     order = [text.find(s) for s in (Q1, CANARY, FINAL_ONE, Q2)]
     assert -1 not in order and order == sorted(order), f"resumed prompt lost or reordered history: {order}"

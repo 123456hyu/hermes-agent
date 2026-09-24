@@ -169,15 +169,19 @@ def test_v1_proto_schema_declaration_is_accepted(outcomes: dict[str, Outcome]) -
     assert params["required"] == ["query"], params
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["ref_dropped_v1"])
+@pytest.mark.xfail(strict=True, raises=nh.KnownSymptom, reason=KNOWN["ref_dropped_v1"])
 def test_v1_ref_parameter_keeps_its_shape(outcomes: dict[str, Outcome]) -> None:
-    params = outcomes["v1"].declaration()["parameters"]
-    assert params["properties"]["mode"].get("enum") == ["fast", "slow"], (
-        f"$ref-typed parameter lost its shape on the v1 wire: {params['properties']['mode']}")
+    _assert_round_trip(outcomes["v1"], "v1")
+    mode = outcomes["v1"].declaration()["parameters"]["properties"]["mode"]
+    if mode == {}:
+        raise nh.KnownSymptom(f"$ref-typed parameter lost its shape on the v1 wire: {mode}")
+    assert mode.get("enum") == ["fast", "slow"], mode
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["array_items_v1"])
+@pytest.mark.xfail(strict=True, raises=nh.KnownSymptom, reason=KNOWN["array_items_v1"])
 def test_v1_array_without_items_is_accepted(outcomes: dict[str, Outcome]) -> None:
     o = outcomes["v1_itemless"]
-    assert not any("items: missing field" in r for r in o.rejections), o.rejections
+    assert o.calls, o.result.describe()
+    if any("items: missing field" in r for r in o.rejections):
+        raise nh.KnownSymptom(f"Google rejected the item-less array: {o.rejections}")
     _assert_round_trip(o, "v1")

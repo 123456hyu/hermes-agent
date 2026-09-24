@@ -19,7 +19,7 @@ import pytest
 pytest.importorskip("botocore")
 
 from tests.e2e.core.providers._native_helpers import (  # noqa: E402
-    ChatResult, NativeHome, assert_no_duplicate_assistant_text, make_home, messages, run_chat,
+    ChatResult, KnownSymptom, NativeHome, assert_no_duplicate_assistant_text, make_home, messages, run_chat,
 )
 from tests.fakes.providers.bedrock_converse import (  # noqa: E402
     ACCESS_KEY, REGION, SECRET_KEY, Drop, FakeBedrock, HttpError, Reasoning, Reply, StreamException, Text,
@@ -132,23 +132,28 @@ def test_mid_stream_drop_retries_without_duplicated_persisted_content(runs: dict
     assert run["requests"][0]["reply"] == "Drop", run["requests"][0]
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["eof_before_message_stop"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["eof_before_message_stop"])
 def test_stream_ending_before_message_stop_is_not_accepted(runs: dict[str, Any]) -> None:
     run = runs["eof_before_message_stop"]
     assert run["result"].returncode == 0, run["result"].describe()
+    assert run["requests"] and run["requests"][0]["reply"] == "Drop", run["requests"]
     rows = [r["content"] for r in _assistant_rows(run["nh"])]
     sent = len(run["requests"])
     # Symptom: the truncated first stream is persisted as the final answer and never retried.
-    assert (sent, rows) == (2, [FINAL]), f"{KNOWN['eof_before_message_stop']}: requests={sent} rows={rows}"
+    if sent == 1 and rows and FINAL.startswith(rows[-1]) and rows[-1] != FINAL:
+        raise KnownSymptom(f"{KNOWN['eof_before_message_stop']}: requests={sent} rows={rows}")
+    assert (sent, rows) == (2, [FINAL]), f"requests={sent} rows={rows}"
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN["validation_retried"])
+@pytest.mark.xfail(strict=True, raises=KnownSymptom, reason=KNOWN["validation_retried"])
 def test_validation_exception_is_surfaced_once_without_retry(runs: dict[str, Any]) -> None:
     run = runs["validation"]
     result: ChatResult = run["result"]
-    # Symptom: the 400 is retried (the scripted success behind it is reached).
     sent = len(run["requests"])
-    assert sent == 1, f"{KNOWN['validation_retried']}: fake saw {sent} requests"
+    assert sent >= 1 and run["requests"][0]["reply"] == "HttpError", run["requests"]
+    # Symptom: the 400 is retried (the scripted success behind it is reached).
+    if sent > 1:
+        raise KnownSymptom(f"{KNOWN['validation_retried']}: fake saw {sent} requests")
     shown = result.stdout + result.stderr
     assert result.returncode != 0 and FINAL not in shown, result.describe()
     assert VALIDATION_MARK in shown and "ValidationException" in shown, result.describe()
