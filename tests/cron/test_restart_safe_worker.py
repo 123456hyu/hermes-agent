@@ -728,71 +728,26 @@ def test_activated_dependency_site_packages_requires_real_venv(monkeypatch, tmp_
     assert worker_env_mod._activated_dependency_site_packages() is None
 
 
-def test_worker_bootstrap_lease_and_activation(tmp_path, monkeypatch):
-    """#122290 P2 (andrexibiza review): the externally spawned worker must hold the
-    committed generation's kernel lease *and* activate its site-packages on its own
-    sys.path, both *before* the first application/dependency import.  Without the lease
-    the PM collector may delete an unselected generation between the gateway's exit and
-    the worker's next import; without activation the first import fails
-    (``No module named 'ruamel'``).
-
-    The fixture arranges:
-      * a committed venv whose ``.parent`` carries ``.lease-managed`` (so
-        ``lease_directory`` takes a real kernel lock),
-      * a fake ``lease_generation`` that records the call,
-      * a fake ``activate_dependencies`` that records the call,
-      * the worker flag on ``sys.argv`` so ``worker_bootstrap`` performs activation.
-    """
+def test_worker_bootstrap_activates_in_marked_worker(tmp_path, monkeypatch):
+    """#122290 P2 follow-up (andrexibiza review of a9b6a8): the marked external
+    worker must run PM's dependency boot -- the single ``activate_dependencies``
+    call that resolves, leases and activates the committed generation in one
+    place, so no separate pre-lease can pin a different generation than the one
+    imported.  Without it the PM collector may delete an unselected generation
+    in the window between the gateway's exit and the worker's first import."""
     import cron.worker_bootstrap as wb
-    from pathlib import Path
 
-    # Reset module-level idempotency flags so the assertions see fresh state.
-    wb._LEASE_ACQUIRED = False
-    wb._ACTIVATED = False
+    wb._BOOTED = False
     try:
-        # Build a committed venv layout under tmp_path:
-        #   tmp_path/install/environments/<gen>/venv  -> pyvenv.cfg
-        #   tmp_path/install/environments/<gen>/.lease-managed
-        install_state = tmp_path / "install_state"
-        generation = install_state / "environments" / "g1"
-        venv = generation / "venv"
-        venv.mkdir(parents=True)
-        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
-        (generation / ".lease-managed").write_text("", encoding="utf-8")
-
-        # Point _activate_generation at our fixture layout.
-        monkeypatch.setattr(wb, "_root", tmp_path)
-
-        # Stub _activate_generation to return the venv path (the fixture).
-        monkeypatch.setattr(wb, "_activate_generation", lambda: venv)
-
-        # Stub lease_generation to record the call without touching the real lock.
-        lease_calls = []
-        def _fake_lease_generation(environment):
-            lease_calls.append(environment)
-            return lambda: None
-        monkeypatch.setattr(
-            "hermes_cli.runtime_state.lease_generation", _fake_lease_generation,
-            raising=False,
-        )
-        # The real lease_generation is imported inside lease_dependencies via
-        # "from hermes_cli.runtime_state import lease_generation", so we must patch
-        # the module attribute before the import runs.
-        import hermes_cli.runtime_state as _rs
-        monkeypatch.setattr(_rs, "lease_generation", _fake_lease_generation)
-
-        # Stub activate_dependencies to record the call.
         activate_calls = []
+
         def _fake_activate(project_root):
             activate_calls.append(project_root)
-        monkeypatch.setattr(
-            "pm.environments.activate_dependencies", _fake_activate,
-            raising=False,
-        )
+
         import pm.environments as _env
         monkeypatch.setattr(_env, "activate_dependencies", _fake_activate)
+        monkeypatch.setattr(wb, "_root", tmp_path)
 
-        # Simulate the restart-safe worker flag.
         old_argv = list(sys.argv)
         sys.argv = old_argv + ["--external-worker-file", "x.json", "--ack-file", "a.ready"]
         try:
@@ -800,129 +755,98 @@ def test_worker_bootstrap_lease_and_activation(tmp_path, monkeypatch):
         finally:
             sys.argv = old_argv
 
-        # Lease was taken on the venv path (lease_generation internally does .parent).
-        assert len(lease_calls) == 1
-        assert lease_calls[0] == venv
-        # Activation was performed (worker flag was present).
+        # Exactly one activate_dependencies call, on the repo root (_root).
         assert len(activate_calls) == 1
-        assert activate_calls[0] == tmp_path  # _root passed to activate_dependencies
-        # Idempotency flags set.
-        assert wb._LEASE_ACQUIRED is True
-        assert wb._ACTIVATED is True
+        assert activate_calls[0] == tmp_path
+        assert wb._BOOTED is True
     finally:
-        wb._LEASE_ACQUIRED = False
-        wb._ACTIVATED = False
+        wb._BOOTED = False
 
 
-def test_worker_bootstrap_leases_but_skips_activation_in_gateway(tmp_path, monkeypatch):
-    """The gateway process (no ``--external-worker-file`` flag) leases the generation
-    (unconditionally, idempotently) but does *not* re-activate dependencies, so the
-    gateway keeps its exact launch contract (already booted through hermes_bootstrap).
-    """
+def test_worker_bootstrap_noop_in_unmarked_gateway(tmp_path, monkeypatch):
+    """The gateway / any unmarked importer of the ``cron`` package keeps its exact
+    launch contract: no dependency boot, no lease, no activation (it already booted
+    through hermes_bootstrap -> activate_dependencies)."""
     import cron.worker_bootstrap as wb
 
-    wb._LEASE_ACQUIRED = False
-    wb._ACTIVATED = False
+    wb._BOOTED = False
     try:
-        venv = tmp_path / "install" / "environments" / "g1" / "venv"
-        venv.mkdir(parents=True)
-        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
-        monkeypatch.setattr(wb, "_root", tmp_path)
-        monkeypatch.setattr(wb, "_activate_generation", lambda: venv)
-
-        lease_calls = []
-        def _fake_lease_generation(environment):
-            lease_calls.append(environment)
-            return lambda: None
-        import hermes_cli.runtime_state as _rs
-        monkeypatch.setattr(_rs, "lease_generation", _fake_lease_generation)
-
-        activate_calls = []
-        def _fake_activate(project_root):
-            activate_calls.append(project_root)
-        import pm.environments as _env
-        monkeypatch.setattr(_env, "activate_dependencies", _fake_activate)
-
-        old_argv = list(sys.argv)
-        sys.argv = old_argv  # no --external-worker-file flag
-        try:
-            wb.worker_bootstrap()
-        finally:
-            sys.argv = old_argv
-
-        # Lease still taken (unconditional).
-        assert len(lease_calls) == 1
-        # Activation NOT performed (gateway path).
-        assert activate_calls == []
-        assert wb._ACTIVATED is False
-    finally:
-        wb._LEASE_ACQUIRED = False
-        wb._ACTIVATED = False
-
-
-def test_worker_bootstrap_no_committed_venv_is_noop(tmp_path, monkeypatch):
-    """When there is no committed dependency generation (pre-PM install, wheel/pipx
-    runner that owns its own deps), both lease and activation are no-ops; the worker
-    proceeds on whatever its interpreter already carries."""
-    import cron.worker_bootstrap as wb
-
-    wb._LEASE_ACQUIRED = False
-    wb._ACTIVATED = False
-    try:
-        monkeypatch.setattr(wb, "_root", tmp_path)
-        # _activate_generation returns None -> no committed venv.
-        monkeypatch.setattr(wb, "_activate_generation", lambda: None)
-
-        # Stub the real lease/activate to *fail* if called (they should not be).
-        def _boom_lease(environment):
-            raise AssertionError("lease_generation called with no committed venv")
-        import hermes_cli.runtime_state as _rs
-        monkeypatch.setattr(_rs, "lease_generation", _boom_lease)
-
         def _boom_activate(project_root):
-            raise AssertionError("activate_dependencies called with no committed venv")
+            raise AssertionError("activate_dependencies called in an unmarked process")
         import pm.environments as _env
         monkeypatch.setattr(_env, "activate_dependencies", _boom_activate)
 
         old_argv = list(sys.argv)
-        sys.argv = old_argv + ["--external-worker-file", "x.json", "--ack-file", "a.ready"]
+        assert "--external-worker-file" not in old_argv
+        sys.argv = old_argv
         try:
-            wb.worker_bootstrap()  # must not raise
+            wb.worker_bootstrap()  # must not touch activate_dependencies
         finally:
             sys.argv = old_argv
 
-        assert wb._LEASE_ACQUIRED is False
-        assert wb._ACTIVATED is False
+        assert wb._BOOTED is False
     finally:
-        wb._LEASE_ACQUIRED = False
-        wb._ACTIVATED = False
+        wb._BOOTED = False
 
 
-def test_cron_scheduler_module_hooks_worker_bootstrap(tmp_path, monkeypatch):
-    """The scheduler module-level hook (``from cron.worker_bootstrap import
-    worker_bootstrap; worker_bootstrap()``) must run *before* the first Hermes
-    package import.  Assert that importing ``cron.scheduler`` with the worker
-    flag set does not raise (the bootstrap is idempotent and degrades
-    gracefully when pm/environments is not yet reachable on a dev checkout)."""
-    import importlib
-    import sys
+def test_worker_bootstrap_failure_propagates(tmp_path, monkeypatch):
+    """#122290 P2 follow-up (andrexibiza): a PM activation failure in the marked
+    worker is fatal, not swallowed.  Continuing on an ambient, unleased import path
+    is exactly the retention hazard the boot removes; the pre-ack failure/recovery
+    path at the spawn site owns that case.  So worker_bootstrap must let the
+    activate_dependencies error propagate instead of logging and continuing."""
+    import cron.worker_bootstrap as wb
 
-    # Remove any cached module so the import re-runs top-level code.
-    for mod in list(sys.modules):
-        if mod.startswith("cron.scheduler") or mod == "cron.worker_bootstrap":
-            del sys.modules[mod]
-
-    old_argv = list(sys.argv)
-    sys.argv = old_argv + ["--external-worker-file", "x.json", "--ack-file", "a.ready"]
+    wb._BOOTED = False
     try:
-        # This import must succeed: worker_bootstrap degrades to a warning when
-        # pm.environments / hermes_cli.runtime_state are not importable in the
-        # dev checkout, and when _activate_generation returns None.
-        mod = importlib.import_module("cron.scheduler")
-        assert mod is not None
-    finally:
-        sys.argv = old_argv
+        class _CorruptSelection(RuntimeError):
+            pass
 
+        def _raise_activate(project_root):
+            raise _CorruptSelection("dependency environment has no site-packages")
+
+        import pm.environments as _env
+        monkeypatch.setattr(_env, "activate_dependencies", _raise_activate)
+        monkeypatch.setattr(wb, "_root", tmp_path)
+
+        old_argv = list(sys.argv)
+        sys.argv = old_argv + ["--external-worker-file", "x.json", "--ack-file", "a.ready"]
+        try:
+            with pytest.raises(_CorruptSelection):
+                wb.worker_bootstrap()
+        finally:
+            sys.argv = old_argv
+    finally:
+        wb._BOOTED = False
+
+
+def test_cron_prelude_boots_before_first_application_import():
+    """#122290 P2 follow-up: the boot must run in the ``cron`` package prelude,
+    *before* the first application import (``cron.jobs`` -> ``utils`` ->
+    ``hermes_yaml`` -> ``ruamel``).  The earlier hook inside ``cron/scheduler.py``
+    ran after that import was already in flight (``cron/__init__`` loads
+    ``cron.jobs`` before ``cron.scheduler``), so the collector could reclaim the
+    generation mid-import.  This test guards the ordering invariant on the prelude
+    source so it is checkable without a self-managed dependency generation."""
+    prelude = (Path(__file__).resolve().parent.parent.parent / "cron" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    lines = prelude.splitlines()
+
+    def line_of(substr):
+        for i, ln in enumerate(lines):
+            if substr in ln:
+                return i
+        return None
+
+    boot_line = line_of("worker_bootstrap()")
+    jobs_import_line = line_of("from cron.jobs import")
+    assert boot_line is not None, "cron/__init__.py no longer calls worker_bootstrap()"
+    assert jobs_import_line is not None, "cron/__init__.py no longer imports cron.jobs"
+    assert boot_line < jobs_import_line, (
+        f"worker_bootstrap() (line {boot_line + 1}) must run before the first "
+        f"application import `from cron.jobs import` (line {jobs_import_line + 1})"
+    )
 
 
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
