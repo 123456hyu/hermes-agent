@@ -990,7 +990,18 @@ def _run_endpoint_probes_parallel(
     shape of ``_PickerBuild.discover_endpoint``. A fn that raises, or that is still
     running when ``deadline`` (total wall-clock budget) expires, degrades to
     ``(None, False, False)`` so the caller falls back to the cached/curated list for
-    that endpoint. Serial fallback when there is nothing to parallelize."""
+    that endpoint.
+
+    The deadline is *hard* on the caller's latency: when it fires we abandon the
+    pool (``shutdown(wait=False, cancel_futures=True)``) and return immediately;
+    orphaned probes keep running in detached threads but cannot hold the picker up.
+    Worst-case blocking is therefore ``max(deadline, slowest single probe that
+    finished before the deadline)`` — never the slowest probe's full duration.
+    (Per-probe HTTP timeouts already cap each individual probe, so the detached
+    threads terminate on their own.)
+
+    Serial fallback when there is nothing to parallelize: a single probe cannot be
+    overlapped, so ``deadline`` does not cap that path (documented, not a bug)."""
     n = len(probe_fns)
     if n == 0:
         return []
@@ -1002,9 +1013,11 @@ def _run_endpoint_probes_parallel(
 
     import concurrent.futures
     results: list = [None] * n
-    with concurrent.futures.ThreadPoolExecutor(
+    pool = concurrent.futures.ThreadPoolExecutor(
         max_workers=min(_PROBE_POOL_MAX_WORKERS, n), thread_name_prefix="model-probe",
-    ) as pool:
+    )
+    timed_out = False
+    try:
         fut_to_idx = {pool.submit(fn): i for i, fn in enumerate(probe_fns)}
         try:
             for fut in concurrent.futures.as_completed(fut_to_idx, timeout=max(deadline, 0.1)):
@@ -1014,7 +1027,13 @@ def _run_endpoint_probes_parallel(
                 except Exception:
                     results[idx] = (None, False, False)
         except concurrent.futures.TimeoutError:
-            pass  # remaining slots degrade to (None, False, False) below
+            timed_out = True  # remaining slots degrade to (None, False, False) below
+    finally:
+        # A deadline miss means the pool still has running futures; waiting on them
+        # would nullify the deadline (the context-manager ``__exit__`` does exactly
+        # that). Abandon them instead: cancel queued work, let in-flight probes run
+        # to their own per-probe HTTP timeouts in detached threads.
+        pool.shutdown(wait=not timed_out, cancel_futures=timed_out)
     for i in range(n):
         if results[i] is None:
             results[i] = (None, False, False)

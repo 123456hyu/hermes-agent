@@ -77,19 +77,64 @@ def test_raising_probe_degrades():
 
 
 def test_deadline_degrades_slow_probes():
-    """Probes still running when the deadline expires degrade; fast ones keep results."""
+    """Probes still running when the deadline expires degrade; fast ones keep results.
+
+    Also asserts the deadline is a real latency bound: the call itself must return
+    promptly even when a probe is still in flight (shutdown(wait=False) path)."""
 
     def fast():
         time.sleep(0.01)
         return ("m-fast", False, True)
 
     def slow():
-        time.sleep(2.0)
+        time.sleep(3.0)
         return ("m-slow", False, True)
 
+    t0 = time.monotonic()
     results = _run_endpoint_probes_parallel([fast, slow], deadline=0.2)
+    elapsed = time.monotonic() - t0
     assert results[0] == ("m-fast", False, True)
     assert results[1] == (None, False, False), "a probe past the deadline must degrade"
+    # The caller's latency must track the deadline, not the slow probe's full
+    # duration. 5x the deadline is a generous margin for CI jitter.
+    assert elapsed < 0.2 * 5, f"deadline was not honored: returned in {elapsed:.2f}s"
+
+
+def test_deadline_hard_bound_many_slow_probes():
+    """Many probes that all overshoot the deadline: the call still returns on time.
+
+    Regression guard for the pre-fix behavior where ``with ThreadPoolExecutor``'s
+    ``__exit__`` joined every worker, so a 3 s probe held the caller for 3 s even
+    with ``deadline=0.2``."""
+
+    def slow():
+        time.sleep(3.0)
+        return ("m-slow", False, True)
+
+    fns = [slow for _ in range(8)]
+    t0 = time.monotonic()
+    results = _run_endpoint_probes_parallel(fns, deadline=0.2)
+    elapsed = time.monotonic() - t0
+    assert results == [(None, False, False)] * 8
+    assert elapsed < 1.5, f"deadline must bound the caller's latency, saw {elapsed:.2f}s"
+
+
+def test_single_probe_skips_pool_by_design():
+    """n == 1 runs inline: the deadline does not cap it (documented, intentional).
+
+    A single probe cannot be overlapped, so the serial fallback executes it
+    directly and its full duration is the caller's latency. Recorded here so the
+    bypass is explicit rather than accidental."""
+
+    def slow():
+        time.sleep(0.2)
+        return ("m-slow", False, True)
+
+    t0 = time.monotonic()
+    results = _run_endpoint_probes_parallel([slow], deadline=0.05)
+    elapsed = time.monotonic() - t0
+    assert results == [("m-slow", False, True)]
+    assert elapsed >= 0.2, "n==1 path runs the probe inline, deadline does not apply"
 
 
 def test_worker_cap_respected():
